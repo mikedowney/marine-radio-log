@@ -1,0 +1,34 @@
+[Unit]
+Description=Radio Log -- web interface
+Documentation=http://localhost:8080/docs
+After=network-online.target
+Wants=network-online.target
+
+# Not Requires=: the log stays readable and useful even when capture is down,
+# which is exactly when you want to look at it.
+After=watchkeeper@%i.service
+RequiresMountsFor=/home/%i/watchkeeper/audio
+
+[Service]
+Type=simple
+User=%i
+Group=%i
+WorkingDirectory=/home/%i
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/%i/venv_wx/bin/python /home/%i/webui.py --port 8080
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=watchkeeper-web
+
+# Reads the database read-only, so it is independent of the capture process:
+# restarting either one leaves the other alone.
+Restart=always
+RestartSec=5
+
+# Yields to capture and transcription under load.
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

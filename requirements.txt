@@ -1,0 +1,10 @@
+# Install into a virtualenv:  python3 -m venv ~/venv_wx && ~/venv_wx/bin/pip install -r requirements.txt
+#
+# rtl_sdr itself is NOT a Python package -- install it with
+#   sudo apt install rtl-sdr
+# and check it with  rtl_test -t
+
+numpy>=1.24
+scipy>=1.10
+soundfile>=0.12
+faster-whisper>=1.0

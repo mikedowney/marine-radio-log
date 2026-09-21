@@ -1,0 +1,558 @@
+# =====================================================================
+#  Watchkeeper channel configuration
+# =====================================================================
+#
+#  Edit this file instead of the program. It is read from the working
+#  directory, then ~/watchkeeper.toml, then ~/watchkeeper/watchkeeper.toml.
+#  Override with --config PATH.
+#
+#      python watchkeeper.py --list-presets
+#      python watchkeeper.py --preset socal_low
+#
+#  Two rules constrain every preset, and both are checked at startup:
+#
+#   1. Every channel must sit inside the capture window. At 2.048 MSPS that
+#      is center +/- 1.024 MHz in principle, but the tuner rolls off near the
+#      edges, so aim to keep everything inside +/- 800 kHz. You get a warning
+#      beyond that and an error beyond +/- 1.024 MHz.
+#
+#   2. Each channel's offset from center must be a whole multiple of 4 Hz
+#      (1 / chunk length). Any center on a 12.5 kHz grid satisfies this for
+#      standard channel plans. This lets the mixer oscillator be computed once
+#      and reused with no phase discontinuity at the chunk seam.
+#
+#  Put the center where no channel sits: the tuner leaks a DC spike there.
+#
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+#  Storage
+# ---------------------------------------------------------------------
+#  The Pi runs from a microSD card, and the recordings are essentially all of
+#  the write traffic: about 1.25 MB/min of audio against roughly 10 KB/min of
+#  database. Putting just the audio on tmpfs removes around 99% of the writes
+#  for about 12 MB of RAM at typical message length.
+#
+#  The cost is that recordings do not survive a reboot. With only 100 messages
+#  retained -- half an hour of traffic -- that is usually an easy trade. The
+#  database stays on the card either way, and any row whose WAV has gone is
+#  dropped at startup so the log never lists something it cannot play.
+#
+#  To do it, uncomment audio_dir below and add to /etc/fstab:
+#
+#    tmpfs /home/pi/watchkeeper/audio tmpfs \
+#          defaults,noatime,size=256M,uid=1000,gid=1000,mode=0755 0 0
+#
+#  A USB SSD is the other answer: keeps the recordings, removes the wear
+#  question entirely, and costs a port.
+
+[storage]
+base_dir  = "~/watchkeeper"
+# audio_dir = "~/watchkeeper/audio"    # point at a tmpfs mount to spare the card
+# db_path   = "~/watchkeeper/watchkeeper.db"
+
+
+[radio]
+station_name = "Radio Log"   # title of the web page and exported transcripts
+sample_rate  = 2048000     # 2.048 MSPS. Lowering to 1024000 halves the span.
+gain         = "36.4"      # dB. "0" selects the tuner's own AGC.
+                           # Lower this if a strong in-band signal approaches
+                           # full scale; an overloaded front end raises the
+                           # noise floor on every channel.
+ppm          = "0"         # The RTL-SDR Blog V4 has a 1 PPM TCXO, so 0 is fine.
+device_index = "0"
+max_messages = 100         # Recordings kept, deleted with their database row.
+                           # Eviction is by value, not purely by age: messages
+                           # Whisper found no speech in go first, then
+                           # low-confidence ones, then oldest. A burst of junk
+                           # cannot push out something worth reading.
+max_record_gb = 8.0        # Cap on --record raw I/Q files.
+# --- Transcription ---------------------------------------------------------
+# The encoder always processes one padded 30-second window, so a 2-second
+# message costs about the same as a 25-second one. What varies between clips is
+# decoder work, and the two settings below are what control it.
+model        = "small.en"   # "base.en" is roughly 3x faster and noticeably
+                            # less accurate. At the 10-14 dB signal-to-noise
+                            # these captures actually have, keeping up is worth
+                            # more than the accuracy difference.
+cpu_threads  = 2            # Was 3. Marine traffic is sparse enough that the
+                            # third thread bought little, and peak power is what
+                            # heat is. The transcriber is niced below the DSP,
+                            # so it yields rather than starving capture.
+beam_size    = 1            # Greedy. Roughly half the decoder work of 2, for a
+                            # small accuracy cost that is hard to see at the
+                            # 10-20 dB signal-to-noise these captures have.
+temperatures = [0.0]        # Each extra entry is a COMPLETE re-decode, tried
+                            # when the checks below fail. On noisy audio they
+                            # fail often, so a three-entry ladder let a bad clip
+                            # cost three full passes -- the source of the rtf=6
+                            # and rtf=9 outliers. One entry caps the worst case.
+compression_ratio_threshold = 2.4
+
+# How readily a transcript is marked "(unclear)" in the log rather than shown
+# as fact. Whisper reports its own confidence per segment; these are where the
+# cutoffs sit. Raise low_conf_avg_logprob toward 0 (say -0.7) and lower
+# low_conf_no_speech (say 0.4) to flag more marginal output. Flagged messages
+# keep their audio and stay in the list -- they are marked, not hidden.
+low_conf_avg_logprob = -1.0
+low_conf_no_speech   = 0.6
+
+
+# ---------------------------------------------------------------------
+#  AVIATION AM  --  Southern California, lower approach/ground block
+# ---------------------------------------------------------------------
+# A note on the prompt below: the phonetic alphabet is deliberately NOT in it.
+# initial_prompt conditions the decoder on text as though it preceded the audio,
+# so listing vocabulary makes the model likelier to emit those words when it
+# cannot hear clearly. A confidently hallucinated "Alpha Bravo" reads as real
+# and cannot be spotted; a garbled "B3OR" is visibly wrong. For a log meant to
+# be trusted at a glance, obvious failure beats plausible invention.
+# bench_whisper.py can measure this if you want to revisit it: it counts
+# phonetic words emitted and reports them against WER.
+[preset.socal_low]
+# Re-centred from 125.200 after dropping Palm Springs and Joshua Control, which
+# produced nothing over several sessions. Everything now sits within +/- 525 kHz
+# instead of +/- 900, clear of the tuner's rolloff.
+center_hz    = 124825000   # nothing transmits here, so the DC spike is harmless
+mode         = "am"
+
+# Filter and squelch. audio_hi_hz sets the top of the voice passband and the
+# RF channel filter follows it automatically. Measured S/N on real airband
+# captures is flat with frequency, so lowering this sounds much less hissy
+# without recovering any words -- and below about 2000 Hz it starts costing
+# intelligibility, because that is where the consonants are.
+audio_hi_hz     = 2700
+squelch_dbfs    = -70.0    # Absolute guard rail, NOT the usual threshold. It
+                           # must sit clear of floor + open_margin_db or it
+                           # silently becomes the operative threshold and stops
+                           # tracking the noise floor -- which makes any gain or
+                           # antenna comparison meaningless, because changing
+                           # the floor then changes the effective squelch
+                           # instead of leaving it fixed. Measured floors: about
+                           # -51 dBFS indoors, -58 outdoors at 36.4 dB gain,
+                           # -67 outdoors at 25 dB. -70 clears all of them.
+open_margin_db  = 8.0      # dB above the floor measured on reference channels
+close_margin_db = 5.0
+hang_s          = 0.6      # carrier may drop this long without ending a message
+preroll_s       = 0.12
+tail_keep_s     = 0.12
+min_message_s   = 0.7      # shorter bursts are discarded as clicks
+max_message_s   = 30.0     # matches Whisper's encoder window
+
+# Chosen from measured data, not guessed. In a sample run every message that
+# Whisper found no speech in measured 6.8 to 7.9 dB, while everything that
+# produced text measured 12.0 dB or better. 10 dB sits in the gap. Raise it if
+# the list still fills with unreadable traffic; lower it if something useful
+# starts disappearing.
+min_snr_db      = 10.0
+transcribe_backlog = 12    # Messages that may wait for transcription. The
+                           # queue is served newest-first, so the top of the log
+                           # stays current; anything evicted keeps its audio and
+                           # is shown as "recorded, not transcribed" rather than
+                           # claiming to still be in progress.
+
+prompt = """
+Southern California Approach, Los Angeles Center, LAX Tower, Hawthorne Ground,
+Burbank Terminal Radar, Orange County Approach, Palm Springs Approach, cleared
+for takeoff, cleared to land, runway two five left, runway seven right, line up
+and wait, contact departure, squawk, ident, heavy, descend and maintain, climb
+and maintain, flight level, turn left heading, traffic in sight, altimeter,
+wind two seven zero at one zero, niner, tree, fife, roger, wilco, say again,
+radar contact, good day.
+"""
+
+channels = [
+  { name = "Coastal Intermediate",   freq = 124300000 },   # -525 kHz
+  { name = "LAX West Arrivals",      freq = 124500000 },   # -325 kHz
+  { name = "Burbank Terminal Radar", freq = 124600000 },   # -225 kHz
+  { name = "LAX South Arrivals",     freq = 124900000 },   #  +75 kHz
+  { name = "HHR Ground",             freq = 125100000 },   # +275 kHz
+  { name = "Orange County Approach", freq = 125350000 },   # +525 kHz
+
+  # Reference channels measure the noise floor so the squelch can be set from
+  # data rather than a constant, and their absolute power detects an antenna
+  # or connector coming loose. Park them 12.5 kHz off the 25 kHz airband grid
+  # where nothing should ever transmit, and clear of the 125.001 MHz spur.
+  { name = "ref-a", freq = 124712500, role = "reference" },
+  { name = "ref-b", freq = 125187500, role = "reference" },
+
+  # Dropped after producing nothing across several sessions. Both are 100+
+  # miles away and well beyond VHF line of sight. Re-adding Joshua at 126.100
+  # would also force the centre back to 125.200 and put two other channels at
+  # the tuner's rolloff again, so it costs more than it looks.
+  # { name = "Palm Springs Approach",   freq = 125250000 },
+  # { name = "Joshua Control Approach", freq = 126100000 },
+  #
+  # HHR Tower on 121.100 cannot go here at any centre frequency: 121.100 to
+  # 125.350 spans 4.25 MHz against an RTL-SDR ceiling of about 2.4 MSPS. It
+  # would need its own preset and its own dongle.
+]
+
+# 125.001030 is a known oscillator spur on this dongle, not a channel.
+# Leave it out; listing it would just fill the database with noise.
+
+
+# ---------------------------------------------------------------------
+#  AVIATION AM  --  Southern California, upper centre/tower block
+# ---------------------------------------------------------------------
+[preset.socal_high]
+center_hz    = 133600000
+mode         = "am"
+audio_hi_hz  = 2700
+
+prompt = """
+Los Angeles Center, LAX Tower, high altitude sector, cleared for takeoff,
+cleared to land, runway two five left, contact departure, squawk, heavy,
+descend and maintain, climb and maintain, flight level, turn left heading,
+radar contact, niner, tree, fife, roger, say again, good day.
+"""
+
+channels = [
+  { name = "High Altitude Center",     freq = 132850000 },
+  { name = "LAX Tower North",          freq = 133900000 },
+  { name = "Inland Transition Sector", freq = 134350000 },
+  { name = "ref-a", freq = 133312500, role = "reference" },
+  { name = "ref-b", freq = 134112500, role = "reference" },
+]
+
+
+# =====================================================================
+#  MARINE VHF  --  the eventual target.  --preset marine
+# =====================================================================
+#
+#  Narrowband FM rather than AM, so the squelch changes too: an unmodulated FM
+#  discriminator outputs loud hiss with no carrier, so carrier power is the
+#  wrong discriminator. The FM path measures discriminator energy above the
+#  voice band instead, which reads near 0.86 on noise and collapses toward 0
+#  when a carrier appears. Those are fm_open_noise / fm_close_noise.
+
+[preset.marine]
+# The standard watch set for a boat in the LA/Long Beach area: calling,
+# distress, bridge-to-bridge, vessel traffic, USCG liaison, and the
+# non-commercial working channels. This is the preset for use ON THE WATER,
+# where ship-to-ship traffic is in range. Several of these channels are silent
+# at the home location -- see Marine_Home for a set chosen from what actually
+# reaches the porch.
+center_hz = 156762500
+mode      = "nfm"
+
+fm_open_noise       = 0.55   # below this: carrier present
+fm_close_noise      = 0.75   # above this: carrier gone
+fm_split_silence_s  = 1.2
+fm_target_message_s = 10.0   # only affects continuously-keyed stations
+max_message_s       = 30.0
+min_snr_db          = 0.0    # deliberately off: on a distress channel a weak,
+                             # garbled transmission may be the one that matters
+
+# NO distress vocabulary in this prompt, deliberately. initial_prompt
+# conditions the decoder on the text as though it preceded the audio, so
+# listing "mayday" and "securite" makes the model reach for them when it cannot
+# hear clearly. That produced a transcript reading "Securite securite, vessel
+# mayday, this is the United States Coast..." on four seconds of noise -- a
+# fabricated distress call, which is the worst output this program could make.
+#
+# The model knows these words without priming; the prompt only biases it toward
+# emitting them under uncertainty. Operational vocabulary stays, because being
+# wrong about a channel number is cheap and being wrong about a mayday is not.
+# No prompt. initial_prompt conditions the decoder on text as though it
+# preceded the audio, which does not merely make hallucination likelier -- it
+# makes it PLAUSIBLE. Unprompted, Whisper invents generic filler that the
+# subtitle and loop filters catch. Prompted, it invents fluent marine
+# phraseology that nothing can distinguish from real traffic.
+#
+# A poorly transcribed real transmission is recoverable: the audio is kept and
+# the text is marked unclear. A fabricated one that reads correctly is not.
+#
+# The old wording is below if you want to measure it rather than guess --
+# bench_whisper.py has a no-prompt row for exactly this comparison.
+#
+# prompt = """
+# Sector Los Angeles Long Beach, vessel traffic service, motor vessel, sailing
+# vessel, tug and tow, switch and answer channel one six, channel two two alpha,
+# channel one three, bridge to bridge, inbound, outbound, precautionary area,
+# Angels Gate, Queens Gate, Long Beach Pilot, pilot boarding, over, out, roger,
+# wilco, say again, standing by.
+# """
+
+channels = [
+  { name = "Ch68 Recreation", freq = 156425000 },   # non-commercial working
+  { name = "Ch09 Calling",    freq = 156450000 },   # boater calling
+  { name = "Ch69 Recreation", freq = 156475000 },   # non-commercial working
+  { name = "Ch12 Port Ops",   freq = 156600000 },   # port operations
+  { name = "Ch13 Bridge",     freq = 156650000 },   # bridge to bridge
+  { name = "Ch14 Traffic",    freq = 156700000 },   # LA/LB vessel traffic service
+  { name = "Ch16 Distress",   freq = 156800000 },   # distress, safety and calling
+  { name = "Ch22A USCG Info", freq = 157100000 },   # USCG liaison and MSI broadcasts
+  # Interstitial, 12.5 kHz off the marine 25 kHz grid.
+  { name = "ref-a", freq = 156537500, role = "reference" },
+  { name = "ref-b", freq = 156737500, role = "reference" },
+]
+
+
+# ---------------------------------------------------------------------
+#  MARINE VHF  --  at the boat, Long Beach
+# ---------------------------------------------------------------------
+#  From a two-hour rtl_power survey taken at the slip, 1440 sweeps at 5 s.
+#  Two hours of scanning needed cleaning first: about 2% of sweeps showed
+#  every channel in the band rising at once, which is marina interference
+#  rather than traffic -- chargers and inverters. Scored on the 96% of sweeps
+#  that were clean.
+#
+#  The difference from the porch is the whole point of moving. Ch13
+#  bridge-to-bridge went from 0.1 to 2.3 minutes, and Ch76 and Ch77 appeared
+#  from nothing to the top of the list. Those are low-power ship-to-ship
+#  channels that cannot reach eleven miles inland, so this is vessel traffic
+#  rather than shore stations. Signal peaks run 27-51 dB above the local
+#  baseline here against 6-19 dB from the porch.
+#
+#  The noise floor is 11 dB higher than the porch -- a marina costs you that
+#  -- but the signals gained far more than the floor rose.
+#
+#  Centre is 37.5 kHz clear of every channel and off the 25 kHz grid. Worst
+#  offset 237.5 kHz, comfortably inside the flat region.
+[preset.boat]
+center_hz = 156762500
+mode      = "nfm"
+
+fm_open_noise       = 0.55
+fm_close_noise      = 0.75
+fm_split_silence_s  = 1.2
+fm_target_message_s = 10.0
+max_message_s       = 30.0
+min_snr_db          = 0.0
+carrier_tail_keep_s = 0.05
+
+vad_filter          = false
+no_speech_threshold = 0.8
+log_prob_threshold  = -1.5
+fm_audio_hi_hz      = 3000
+max_tokens_per_second       = 8
+compression_ratio_threshold = 2.4
+temperatures                = [0.0]
+
+# Thermal governor. The Pi 5 starts pulling clocks back around 80 C and this
+# one has a HAT sitting over the SoC, so transcription alone will hold it at
+# the limit. Waiting before a decode costs latency, which is nearly free --
+# traffic is sparse and the log gets read after the fact -- while throttling
+# slows the DSP as well and risks dropped chunks.
+#
+# The queue is newest-first, so whatever piles up during a pause is the oldest
+# and least interesting. max_wait caps any single stall.
+# Optional phrase list built by fetch_hallucinations.py from the public
+# whisper-hallucinations dataset (Whisper run over noise-only clips, so the
+# phrases are what it actually invents). The generator strips anything
+# containing radio vocabulary before writing the file, and long generic
+# phrases are only ever matched against a WHOLE transcript -- never as a
+# substring -- so a real transmission cannot lose part of itself to it.
+#
+# "thank you" is the single most common hallucination and also constant on
+# the radio; it is blocked only when it is the entire transcript. Said five
+# times over, the repetition filters catch it regardless.
+hallucination_list   = "~/hallucinations.json"
+
+thermal_pause_above  = 76.0
+thermal_resume_below = 71.0
+thermal_max_wait_s   = 45.0
+
+# No prompt: priming the decoder makes its inventions plausible rather than
+# obviously wrong, which is the worse failure.
+
+# Chosen for how this boat is actually used, not by survey activity alone.
+# Ch68 and Ch69 carry recreational boat-to-boat traffic, which clusters around
+# people heading out and coming back -- a two-hour midday scan can miss it
+# entirely, so their absence from the survey means little.
+#
+# Ch76 (156.775) and Ch77 (156.825) topped that survey at 12.5 and 12.1 minutes
+# and are deliberately absent: listening showed both are static. Every message
+# arrived at 25.7-26.2 dB with a duration of 0.7-2.2 s, which is a repeating
+# emitter. A spectrum scan cannot tell narrowband interference from traffic.
+channels = [
+  { name = "Ch68 Recreation", freq = 156425000 },   # -337.5 kHz  non-commercial working
+  { name = "Ch09 Calling",    freq = 156450000 },   # -312.5 kHz  calling
+  { name = "Ch69 Recreation", freq = 156475000 },   # -287.5 kHz  non-commercial working
+  { name = "Ch12 Port Ops",   freq = 156600000 },   # -162.5 kHz  used at Catalina
+  { name = "Ch16 Distress",   freq = 156800000 },   #  +37.5 kHz  distress and calling
+  { name = "Ch22A USCG Info", freq = 157100000 },   # +337.5 kHz  USCG broadcasts
+
+  # Interstitial, quiet across the cleaned survey.
+  { name = "ref-a", freq = 156237500, role = "reference" },
+  { name = "ref-b", freq = 156987500, role = "reference" },
+
+  # Ch14 pulled out to measure its thermal cost. It was by far the busiest
+  # channel here -- 11 messages to Ch16's 4 -- and it tracks the ships crossing
+  # your water even though you never transmit on it. Put it back if the heat
+  # turns out to be affordable.
+  # { name = "Ch14 Traffic",  freq = 156700000 },   # LA/LB VTS
+  #
+  # Dropped as not useful for this boat, though all three carried traffic:
+  # { name = "Ch06 Safety",   freq = 156300000 },
+  # { name = "Ch13 Bridge",   freq = 156650000 },   # 2.3 min
+  # { name = "Ch73 Port Ops", freq = 156675000 },   # 3.4 min
+  # { name = "Ch74 Port Ops", freq = 156725000 },   # 4.5 min
+]
+
+
+# ---------------------------------------------------------------------
+#  MARINE VHF  --  what actually reaches the home location
+# ---------------------------------------------------------------------
+#  Built from a two-hour rtl_power survey of 156-158 MHz taken from the porch,
+#  not from a channel plan. Everything audible here is shore infrastructure --
+#  vessel traffic, Coast Guard, port operations -- because a 25 W set on a boat
+#  at deck level does not clear the horizon from eleven miles inland. Every
+#  ship-to-ship channel was silent for the full two hours.
+#
+#  Centre is 62.5 kHz clear of every channel and off the 25 kHz grid, so the
+#  tuner's DC spike lands in empty spectrum. Worst offset 512.5 kHz, inside the
+#  flat part of the capture.
+[preset.Marine_Home]
+center_hz = 156587500
+mode      = "nfm"
+
+fm_open_noise       = 0.55
+fm_close_noise      = 0.75
+fm_split_silence_s  = 1.2
+fm_target_message_s = 10.0
+max_message_s       = 30.0
+min_snr_db          = 0.0
+
+# Traffic here is weak: shore stations eleven miles off, heard from a rooftop.
+# Whisper's own gatekeepers throw away marginal speech, and on this preset that
+# is the wrong trade -- the carrier squelch has already established a
+# transmission happened, so a decoder that returns nothing has lost real
+# content rather than avoided a false positive.
+#
+# vad_filter = false is the significant one: Silero routinely rejects weak
+# transmissions outright, which shows up as "no speech found" on a clip you can
+# hear voice in. The cost is more hallucination on noise; the confidence
+# thresholds below are what catch that, and anything marginal is shown as
+# "(unclear)" rather than as fact.
+vad_filter          = false
+no_speech_threshold = 0.8    # default 0.6; higher keeps more marginal speech
+log_prob_threshold  = -1.5   # default -1.0; likewise
+
+# Turning the VAD off lets more noise reach the decoder, so the repetition
+# guard matters more here. Whisper's compression-ratio check only fires when
+# there is a higher temperature to retry at, so a single-entry ladder disables
+# it entirely. Marine traffic is sparse enough to afford the retries: the extra
+# passes only happen on clips that fail the checks, which are the noise ones we
+# want rejected anyway.
+# Two entries, not three. With the VAD off, noise reaches the decoder and can
+# start a repetition loop; each temperature repeats that loop in full. A clip
+# was measured at rtf 46.8 -- three minutes of decoding for four seconds of
+# audio -- before max_tokens_per_second was introduced to bound it.
+temperatures                = [0.0, 0.2]
+compression_ratio_threshold = 2.4
+
+# Tokens per second of audio the decoder may produce. Speech is around four or
+# five; eight is generous. This is the hard stop on a runaway loop, and it
+# matters most on exactly the preset where the VAD is off.
+max_tokens_per_second       = 8
+
+# Narrower than the 3600 default. FM noise rises with frequency before
+# de-emphasis, so this costs little speech and removes the hissiest part.
+fm_audio_hi_hz      = 3000
+
+# NO distress vocabulary in this prompt, deliberately. initial_prompt
+# conditions the decoder on the text as though it preceded the audio, so
+# listing "mayday" and "securite" makes the model reach for them when it cannot
+# hear clearly. That produced a transcript reading "Securite securite, vessel
+# mayday, this is the United States Coast..." on four seconds of noise -- a
+# fabricated distress call, which is the worst output this program could make.
+#
+# The model knows these words without priming; the prompt only biases it toward
+# emitting them under uncertainty. Operational vocabulary stays, because being
+# wrong about a channel number is cheap and being wrong about a mayday is not.
+# No prompt. initial_prompt conditions the decoder on text as though it
+# preceded the audio, which does not merely make hallucination likelier -- it
+# makes it PLAUSIBLE. Unprompted, Whisper invents generic filler that the
+# subtitle and loop filters catch. Prompted, it invents fluent marine
+# phraseology that nothing can distinguish from real traffic.
+#
+# A poorly transcribed real transmission is recoverable: the audio is kept and
+# the text is marked unclear. A fabricated one that reads correctly is not.
+#
+# The old wording is below if you want to measure it rather than guess --
+# bench_whisper.py has a no-prompt row for exactly this comparison.
+#
+# prompt = """
+# Sector Los Angeles Long Beach, vessel traffic service, motor vessel, sailing
+# vessel, tug and tow, switch and answer channel one six, channel two two alpha,
+# channel one three, bridge to bridge, inbound, outbound, precautionary area,
+# Angels Gate, Queens Gate, Long Beach Pilot, pilot boarding, over, out, roger,
+# wilco, say again, standing by.
+# """
+
+# Activity is minutes of traffic seen in the two-hour survey.
+channels = [
+  { name = "Ch06 Safety",     freq = 156300000 },   # -287.5 kHz  intership safety, SAR
+  { name = "Ch09 Calling",    freq = 156450000 },   # -137.5 kHz  calling      4.1 min
+  { name = "Ch13 Bridge",     freq = 156650000 },   #  +62.5 kHz  bridge to bridge
+  { name = "Ch14 Traffic",    freq = 156700000 },   # +112.5 kHz  LA/LB VTS   14.3 min
+  { name = "Ch74 Port Ops",   freq = 156725000 },   # +137.5 kHz  port ops     1.7 min
+  { name = "Ch16 Distress",   freq = 156800000 },   # +212.5 kHz  distress     1.6 min
+  { name = "Ch22A USCG Info", freq = 157100000 },   # +512.5 kHz  USCG MSI     9.7 min
+
+  # Interstitial, 12.5 kHz off the grid, in spectrum that showed nothing.
+  # Interstitial, in spectrum that showed nothing across the two-hour survey.
+  # Note 156.5375 is NOT used: it sits 12.5 kHz from Ch70 DSC, which transmits
+  # in bursts, and a reference channel has to be genuinely quiet.
+  { name = "ref-a", freq = 156362500, role = "reference" },
+  { name = "ref-b", freq = 156937500, role = "reference" },
+
+  # Ch03A carried 15.1 min of traffic at 19.5 dB SNR, but analysis of a
+  # recording showed a Gaussian amplitude distribution with a crest factor
+  # BELOW Gaussian and a bursty envelope -- a constant-envelope multi-level
+  # symbol stream, i.e. P25 or DMR digital voice. Normal for a Coast Guard
+  # channel. It is received correctly; there is simply no speech in it, so it
+  # was costing a receiver and 10% of a core to record noise.
+  # { name = "Ch03A USCG",      freq = 156150000 },   # digital, not voice
+  #
+  # Ch84 dropped to save a receiver. It carried 6.1 min in two hours but is
+  # allocated to public correspondence, a service that is effectively dead, so
+  # whatever is using it is unidentified and may well be digital like Ch03A.
+  # { name = "Ch84 Marine Op",  freq = 157175000 },
+  #
+  # Saw traffic but did not make the CPU budget. Ch12's peak was 37.6 dB against
+  # a 99.9th percentile of 12.5, so one very close vessel rather than sustained
+  # traffic. Swap any of these in for a channel above if a later survey
+  # disagrees with one Saturday afternoon.
+  # { name = "Ch12 Port Ops",   freq = 156600000 },   # port operations   1.1 min
+  # { name = "Ch73 Port Ops",   freq = 156675000 },   # 1.0 min
+]
+
+
+# =====================================================================
+#  NOAA WEATHER RADIO  --  continuous carrier test signal.  --preset wx
+# =====================================================================
+#
+#  Unlike marine or aviation this station never stops transmitting, so the
+#  carrier cannot mark message boundaries. The FM path splits on pauses in
+#  speech instead, which is what fm_split_silence_s and fm_target_message_s
+#  control. The two AIS channels are diagnostic rather than voice: if AIS
+#  bursts start appearing, ship-borne VHF is reaching the antenna and marine
+#  voice should be within reach.
+
+[preset.wx]
+center_hz = 162262500
+mode      = "nfm"
+
+fm_split_silence_s  = 1.2
+fm_target_message_s = 10.0
+
+prompt = """
+National Weather Service coastal waters forecast, NOAA weather radio station
+KWO37, small craft advisory, coastal flood advisory, high surf advisory, rip
+current risk, surf heights, south swell, west swell, high tide, low tide, feet,
+Pacific Daylight Time, sea temperature, air temperature, watches warnings and
+advisories, knots, wave height.
+"""
+
+channels = [
+  { name = "AIS-A", freq = 161975000, role = "diagnostic" },
+  { name = "AIS-B", freq = 162025000, role = "diagnostic" },
+  { name = "WX2",   freq = 162400000 },
+  { name = "WX1",   freq = 162550000 },
+  { name = "ref-a", freq = 162337500, role = "reference" },
+  { name = "ref-b", freq = 162487500, role = "reference" },
+]

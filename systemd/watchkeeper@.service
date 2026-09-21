@@ -1,0 +1,51 @@
+[Unit]
+Description=Radio Log -- SDR watchkeeper (capture and transcription)
+Documentation=http://localhost:8080/docs
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+# The recordings live on a tmpfs mount. Without this the service can start
+# first and write underneath the mount point, which then gets hidden when the
+# mount appears -- the database would then reference files that are not there.
+RequiresMountsFor=/home/%i/watchkeeper/audio
+
+[Service]
+Type=simple
+User=%i
+Group=%i
+WorkingDirectory=/home/%i
+
+# Unbuffered, or journalctl shows nothing until the block buffer flushes.
+Environment=PYTHONUNBUFFERED=1
+# faster-whisper is told how many threads to use in code (cpu_threads in the
+# config). Stop OpenMP and BLAS from independently spawning one thread per
+# core on top of that -- that was a significant part of the thermal load.
+Environment=OMP_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=1
+
+# The preset is the one thing you are likely to change here. Everything else
+# about the run lives in ~/watchkeeper.toml.
+ExecStart=/home/%i/venv_wx/bin/python /home/%i/watchkeeper.py --preset marine
+
+# No --log: systemd captures stdout into the journal, which rotates itself.
+# A --log file does not rotate and grows without limit on the SD card.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=watchkeeper
+
+# The script retries internally where it can; this catches what it cannot,
+# such as the USB dongle being unplugged.
+Restart=always
+RestartSec=10
+
+# Capture must not be starved by the transcriber, which runs flat out.
+Nice=-5
+
+# A clean SIGINT lets it close the SQLite database and flush the current
+# recording instead of leaving a stub WAV behind.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio Log — operator and maintenance guide</title>
+<style>
+  :root {
+    --ground:#101A1F; --panel:#16242B; --panel-2:#1D2F38;
+    --text:#DCE6EA; --dim:#8FA3AC; --dimmer:#6C838D;
+    --line:#24383F; --accent:#7FB2C4; --warn:#E0A458; --bad:#D9776A;
+    --code-bg:#0C161A;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --ground:#FBFAF8; --panel:#FFFFFF; --panel-2:#F2F0EC;
+      --text:#1F2A2E; --dim:#5A6B73; --dimmer:#7C8C94;
+      --line:#E2DED7; --accent:#2C6D85; --warn:#9A6215; --bad:#A63D2E;
+      --code-bg:#F4F2EE;
+    }
+  }
+  :root[data-theme="light"] {
+    --ground:#FBFAF8; --panel:#FFFFFF; --panel-2:#F2F0EC;
+    --text:#1F2A2E; --dim:#5A6B73; --dimmer:#7C8C94;
+    --line:#E2DED7; --accent:#2C6D85; --warn:#9A6215; --bad:#A63D2E;
+    --code-bg:#F4F2EE;
+  }
+
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:18px; }
+  body {
+    margin:0; background:var(--ground); color:var(--text);
+    font:16px/1.65 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-text-size-adjust:100%;
+  }
+  .wrap { max-width:860px; margin:0 auto; padding:34px 16px 90px; }
+
+  header { border-bottom:1px solid var(--line); padding-bottom:20px; margin-bottom:26px; }
+  h1 { font-size:27px; margin:0 0 6px; letter-spacing:-.01em; font-weight:600; }
+  .sub { color:var(--dim); font-size:15px; margin:0; }
+  .meta { color:var(--dimmer); font-size:13px; margin-top:12px; }
+
+  h2 {
+    font-size:20px; margin:42px 0 12px; padding-top:12px; font-weight:600;
+    border-top:1px solid var(--line); letter-spacing:-.01em;
+  }
+  h3 { font-size:16px; margin:26px 0 8px; font-weight:600; color:var(--accent); }
+  h4 { font-size:15px; margin:20px 0 6px; font-weight:600; }
+  p { margin:0 0 13px; }
+  ul,ol { margin:0 0 13px; padding-left:22px; }
+  li { margin-bottom:5px; }
+  a { color:var(--accent); }
+  strong { font-weight:600; }
+
+  code {
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:13.5px;
+    background:var(--code-bg); padding:1.5px 5px; border-radius:4px;
+    border:1px solid var(--line); word-break:break-word;
+  }
+  pre {
+    background:var(--code-bg); border:1px solid var(--line); border-radius:7px;
+    padding:13px 15px; overflow-x:auto; margin:0 0 15px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    font-size:13.5px; line-height:1.55;
+  }
+  pre code { background:none; border:none; padding:0; font-size:inherit; }
+
+  table { width:100%; border-collapse:collapse; margin:0 0 16px; font-size:14.5px; display:block; overflow-x:auto; }
+  th,td { text-align:left; padding:8px 11px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:13px; letter-spacing:.02em; white-space:nowrap; }
+  td code { white-space:nowrap; }
+
+  .note, .warn-box {
+    border-left:3px solid var(--accent); background:var(--panel);
+    padding:12px 15px; border-radius:0 6px 6px 0; margin:0 0 16px; font-size:15px;
+  }
+  .warn-box { border-left-color:var(--warn); }
+  .note p:last-child, .warn-box p:last-child { margin-bottom:0; }
+  .note b, .warn-box b { display:block; margin-bottom:4px; font-size:13px;
+    letter-spacing:.03em; text-transform:uppercase; color:var(--dim); }
+
+  nav {
+    background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:16px 20px; margin-bottom:12px;
+  }
+  nav h2 { border:none; margin:0 0 9px; padding:0; font-size:13px;
+    letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+  nav ol { margin:0; padding-left:20px; column-gap:28px; }
+  @media (min-width:620px) { nav ol { columns:2; } }
+  nav li { margin-bottom:3px; break-inside:avoid; }
+  nav a { text-decoration:none; }
+  nav a:hover { text-decoration:underline; }
+
+  .chain { font-size:13.5px; line-height:2.0; }
+  .chain span { background:var(--panel-2); border:1px solid var(--line);
+    border-radius:5px; padding:3px 8px; white-space:nowrap; display:inline-block; }
+  .chain i { color:var(--dimmer); font-style:normal; padding:0 3px; }
+
+  footer { margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
+    color:var(--dimmer); font-size:13.5px; }
+  .toplink { display:inline-block; margin-top:8px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Radio Log</h1>
+  <p class="sub">A multi-channel VHF receiver, recorder and transcriber running on a Raspberry&nbsp;Pi&nbsp;5.</p>
+  <p class="meta">Operator and maintenance guide &middot; last revised 20 September 2026</p>
+</header>
+
+<nav>
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#what">What it does</a></li>
+    <li><a href="#quickstart">Getting it running</a></li>
+    <li><a href="#hardware">Hardware</a></li>
+    <li><a href="#theory">Theory of operation</a></li>
+    <li><a href="#files">Files</a></li>
+    <li><a href="#config">Configuration</a></li>
+    <li><a href="#presets">Presets</a></li>
+    <li><a href="#cli">Command line reference</a></li>
+    <li><a href="#webui">The web interface</a></li>
+    <li><a href="#admin">Routine administration</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+    <li><a href="#limits">Known limits</a></li>
+  </ol>
+</nav>
+
+<!-- ========================================================= -->
+<h2 id="what">1. What it does</h2>
+
+<p>The watchkeeper listens to several VHF radio channels at once, notices when
+someone transmits, records each transmission as a separate audio file,
+transcribes it, and puts the result in a log you can read on a phone.</p>
+
+<p>It is a <em>watchkeeper</em>, not a scanner. A scanner stops on one channel
+at a time and you miss whatever happens on the others. This receives the whole
+band continuously and splits it into channels in software, so nothing is missed
+while something else is talking.</p>
+
+<p>Two bands are supported and behave quite differently:</p>
+<ul>
+  <li><strong>Marine VHF</strong> (156&ndash;158&nbsp;MHz), narrowband FM. Boats,
+      harbour control, Coast Guard.</li>
+  <li><strong>Aviation</strong> (118&ndash;137&nbsp;MHz), AM. Air traffic control.</li>
+</ul>
+
+<div class="note">
+  <b>The recording is the record</b>
+  <p>Transcripts are a convenience for skimming. They are produced by a speech
+  model working on noisy radio audio and they are sometimes wrong in ways that
+  read perfectly well. Every transcript can be played back as audio, and on
+  anything that matters you should listen rather than trust the text. This
+  principle shapes a lot of the design below.</p>
+</div>
+
+<!-- ========================================================= -->
+<h2 id="quickstart">2. Getting it running</h2>
+
+<p>Two programs, run independently. Neither needs the other, though the web
+interface has nothing to show until the watchkeeper has recorded something.</p>
+
+<pre><code># the receiver — holds the USB dongle
+~/venv_wx/bin/python watchkeeper.py --preset boat
+
+# the web interface — reads the database, serves port 8080
+~/venv_wx/bin/python webui.py</code></pre>
+
+<p>Then open <code>http://&lt;the-pi&gt;:8080</code> in a browser.</p>
+
+<p>Over SSH you will want both to survive the connection dropping, which on a
+boat's wifi it will:</p>
+
+<pre><code>tmux new -s wk
+# start the watchkeeper, then Ctrl-B then D to detach
+tmux new -s web
+# start the web interface, detach the same way
+
+tmux attach -t wk     # come back to it later
+tmux ls               # list sessions</code></pre>
+
+<p>On a system that is left unattended — which is the normal case on the boat —
+install them as services instead and they come up on their own after a power
+cut. See <a href="#boot">Running at boot</a>. The manual commands above are
+still how you test a configuration change before committing it to the
+service.</p>
+
+<div class="warn-box">
+  <b>One radio, one program</b>
+  <p>The RTL-SDR can only be opened by one process at a time. If the watchkeeper
+  is running, gqrx and <code>rtl_power</code> will fail to start, and vice
+  versa. Stop one before starting the other. <code>pgrep -a rtl_sdr</code> shows
+  what currently holds it.</p>
+</div>
+
+<!-- ========================================================= -->
+<h2 id="hardware">3. Hardware</h2>
+
+<table>
+  <tr><th>Part</th><th>Detail</th><th>Notes</th></tr>
+  <tr><td>Computer</td><td>Raspberry Pi 5, 16&nbsp;GB</td>
+      <td>Debian 13 (trixie). Memory is not a constraint; heat is.</td></tr>
+  <tr><td>Receiver</td><td>RTL-SDR Blog V4</td>
+      <td>Rafael Micro R828D tuner, 1&nbsp;PPM TCXO. USB.</td></tr>
+  <tr><td>Cooling</td><td>Active cooler + metal case</td>
+      <td>Essential. See <a href="#trouble">troubleshooting</a>.</td></tr>
+  <tr><td>Storage</td><td>microSD</td>
+      <td>Recordings live in RAM to spare it — see <a href="#files">files</a>.</td></tr>
+  <tr><td>Antenna</td><td>Marine VHF</td>
+      <td>The single biggest influence on transcription quality.</td></tr>
+  <tr><td>AI HAT+ 2</td><td>Hailo-10H NPU, optional</td>
+      <td>Not used. Benchmarked and rejected for speech — see
+          <a href="#limits">known limits</a>.</td></tr>
+</table>
+
+<h3>Why the antenna matters more than anything in software</h3>
+
+<p>Measured on this system: transcripts recorded eleven miles inland were
+largely unusable regardless of which speech model ran. The same code at the
+dock produced coherent, correct traffic. Model choice moved the error rate by a
+few percent; location moved it from unusable to good.</p>
+
+<p>If transcripts are poor, look at the antenna and its position before
+changing any setting described in this document.</p>
+
+<!-- ========================================================= -->
+<h2 id="theory">4. Theory of operation</h2>
+
+<h3>4.1 The signal path</h3>
+
+<p class="chain">
+  <span>antenna</span><i>&rarr;</i><span>RTL-SDR</span><i>&rarr;</i><span><code>rtl_sdr</code></span><i>&rarr;</i><span>raw I/Q, 2.048&nbsp;MSPS</span><i>&rarr;</i><span>channelizer</span><i>&rarr;</i><span>one receiver per channel</span><i>&rarr;</i><span>squelch gate</span><i>&rarr;</i><span>message</span><i>&rarr;</i><span>WAV + database row</span><i>&rarr;</i><span>transcriber</span><i>&rarr;</i><span>web interface</span>
+</p>
+
+<p>The dongle is tuned once, to a centre frequency chosen so every channel of
+interest falls inside the 2.048&nbsp;MHz it can capture at once. That capture
+is read in quarter-second chunks by a dedicated thread, so the USB stream never
+stalls waiting for processing.</p>
+
+<h3>4.2 The channelizer</h3>
+
+<p>Each channel is extracted from the wideband capture by mixing it down to
+baseband and then decimating in two stages:</p>
+
+<pre><code>2.048 MHz  ÷16 →  128 kHz  ÷4 →  32 kHz (IF)  ÷2 →  16 kHz (audio)</code></pre>
+
+<p>Two stages rather than one because a single filter sharp enough to go
+straight from 2&nbsp;MHz to 32&nbsp;kHz would be enormously expensive. Splitting
+it costs a fraction of the work for the same rejection. Measured adjacent
+channel rejection is about 58&nbsp;dB, so a strong signal on one channel does
+not bleed into its neighbours.</p>
+
+<p>Each receiver costs roughly 10% of one CPU core. That is the practical limit
+on how many channels a preset can watch: eight voice channels plus two
+references is about as far as a Pi&nbsp;5 goes while also transcribing.</p>
+
+<h3>4.3 Reference channels and calibration</h3>
+
+<p>Every preset includes two channels marked <code>role = "reference"</code>,
+placed on frequencies that carry no traffic — usually 12.5&nbsp;kHz off the
+standard channel grid. They are never recorded. They exist to measure what
+"nothing" sounds like right now.</p>
+
+<p>The squelch thresholds are then derived from that measurement rather than
+hard-coded, so the system adapts to a new location, a different antenna, or a
+change in gain without being retuned by hand. Calibration takes about twenty
+seconds after startup, and the gate stays shut until it completes.</p>
+
+<p>The reference channels do two more jobs. If they read a level outside a sane
+range, calibration is refused and the previous thresholds are kept — that
+usually means something is transmitting on a reference frequency. And if their
+absolute power drops sharply, the log raises an antenna alarm, because a 25&nbsp;dB
+drop in received noise almost always means a connector has come loose.</p>
+
+<h3>4.4 Squelch: two completely different problems</h3>
+
+<h4>AM (aviation)</h4>
+<p>An AM transmitter only radiates while someone is talking, so carrier power
+is a direct measure of whether anyone is on the channel. The gate opens a set
+margin above the measured noise floor (default 8&nbsp;dB) and closes a smaller
+margin below it (5&nbsp;dB), the difference being hysteresis so it does not
+chatter.</p>
+
+<h4>FM (marine)</h4>
+<p>This one is less obvious. An FM receiver's output is the same loudness
+whether it is receiving speech or pure noise — that is what the modulation
+does, and it is why an unsquelched FM radio hisses at full volume. Measured on
+this receiver, carrier present and carrier absent both produce about
+&minus;5.9&nbsp;dBFS of audio. <strong>So audio level tells you nothing about
+whether anyone is transmitting.</strong></p>
+
+<p>Instead the system measures energy <em>above the voice band</em> in the
+discriminator output, before de-emphasis. With no carrier this reads about
+0.86; with a carrier it collapses to nearly zero. The metric ignores amplitude
+entirely, which makes it immune to gain changes and to signal strength — a weak
+but clean carrier reads the same as a strong one.</p>
+
+<p>There is a second stage within the first. Marine weather stations transmit a
+continuous carrier for minutes at a time, so carrier detection alone would
+produce one enormous recording. Within an open carrier a speech gate segments
+the audio into individual transmissions on pauses.</p>
+
+<h3>4.5 Squelch tail and dropouts</h3>
+
+<p>When a carrier drops, the FM discriminator has nothing to demodulate and
+outputs full-scale noise. That is the burst of static at the end of every
+transmission, and the speech model reliably transcribes it as
+<code>BANG!</code> or similar.</p>
+
+<p>Two separate settings deal with it, and conflating them was a real bug worth
+understanding:</p>
+<ul>
+  <li><code>hang</code> decides <em>when a transmission has ended</em>. It needs
+      to be generous (0.5&nbsp;s) so a brief dropout does not split one message
+      into two.</li>
+  <li><code>carrier_tail_keep_s</code> decides <em>how much of that hang reaches
+      the recording</em>. It wants to be as short as the fade allows
+      (0.05&nbsp;s).</li>
+</ul>
+
+<p>Beyond the tail, the audio is muted outright at any moment the carrier is
+absent — ramped over each frame so the transition does not click. On a
+fluttering signal this removes bursts of static from the middle of a recording,
+not merely the end.</p>
+
+<h3>4.6 Audio conditioning</h3>
+
+<p>Once a message is complete it is processed in a fixed order, and the order
+matters:</p>
+<ol>
+  <li>Trim the tail silence.</li>
+  <li>Apply a 40&nbsp;ms raised-cosine fade at each end.</li>
+  <li>Normalise to a target RMS of 0.1 (about &minus;20&nbsp;dBFS), capped at
+      20&nbsp;dB of gain.</li>
+  <li>Apply a look-ahead limiter, <em>after</em> normalisation, with a ceiling
+      relative to the target level.</li>
+</ol>
+
+<p>Putting the limiter before normalisation is a mistake that looks harmless and
+is not: the gain applied afterwards puts the peaks straight back. The key-up
+transient measured +12.9&nbsp;dB and clipped. With the limiter in the right
+place it is +5.3&nbsp;dB with no full-scale samples, and inaudible.</p>
+
+<h3>4.7 Transcription</h3>
+
+<p>Recording and transcription are deliberately decoupled. The WAV and the
+database row exist before the transcriber ever sees them, so a slow or failed
+transcription degrades to "tap to listen" rather than a lost message.</p>
+
+<table>
+  <tr><th>Setting</th><th>Value</th><th>Why</th></tr>
+  <tr><td>Model</td><td><code>small.en</code>, int8</td>
+      <td>Benchmarked against six alternatives. See <a href="#limits">limits</a>.</td></tr>
+  <tr><td>Threads</td><td>2</td><td>Traffic is sparse; peak power is heat.</td></tr>
+  <tr><td>Beam size</td><td>1</td><td>Greedy. Roughly half the work of 2.</td></tr>
+  <tr><td>Queue</td><td>Newest first, depth 12</td>
+      <td>When behind, the top of the log stays current.</td></tr>
+  <tr><td>Token cap</td><td>8 per second of audio</td>
+      <td>Speech runs 4&ndash;5. Bounds a runaway loop.</td></tr>
+</table>
+
+<p>The token cap deserves a note. Without it, a decoder that starts repeating
+runs to the model's 448-token ceiling, and a four-second clip was measured
+taking three minutes. Capping output to what the clip could plausibly contain
+bounds the worst case regardless of what the decoder does.</p>
+
+<h3>4.8 Hallucination filters</h3>
+
+<p>Whisper was trained on audio paired with subtitles scraped from the web. On
+silence or noise it does not return nothing — it returns whatever text was
+statistically associated with silence in that training data, which is largely
+YouTube sign-offs. It also narrates sound effects, because subtitle files do.</p>
+
+<p>Six filters run on every transcript, each catching a shape the others miss:</p>
+
+<table>
+  <tr><th>Filter</th><th>Catches</th></tr>
+  <tr><td>Annotations</td><td><code>[sound of a horn]</code>, <code>*static*</code>, <code>♪♪</code>, <code>F***</code></td></tr>
+  <tr><td>Onomatopoeia</td><td><code>BANG!</code>, <code>CRASH!</code> — bare, unbracketed</td></tr>
+  <tr><td>Narration</td><td><code>Sound of a fire crackling.</code>, <code>Indistinct chatter.</code></td></tr>
+  <tr><td>Subtitle corpus</td><td><code>Thanks for watching</code>, <code>Please subscribe</code></td></tr>
+  <tr><td>Word loops</td><td><code>Gun, gun, gun,</code></td></tr>
+  <tr><td>Phrase loops</td><td><code>Thanks guys, thanks guys, thanks guys</code></td></tr>
+  <tr><td>Ellipsis tails</td><td><code>out. ... ... ... ... ...</code> &mdash; filler when the decoder runs past the audio</td></tr>
+</table>
+
+<p>Two design rules run through all of them.</p>
+
+<p><strong>Trim, do not discard.</strong> A transmission that decodes as
+"Islander traffic, K-104 K-104 K-104 K-104" contains two real words. Throwing
+away the whole transcript loses them. Every filter removes what it recognises
+and keeps the rest, marking the result unclear. The transcript is only
+discarded when nothing survives.</p>
+
+<p><strong>A readable recording is never discarded.</strong> The repetition
+filters work on text, and text alone cannot distinguish a Coast Guard station
+identifying itself three times &mdash; which is correct radio procedure &mdash;
+from a decoder stuck on a phrase. The audio can. If the readability score is
+65% or above, the transcript is trimmed where possible and kept regardless,
+marked unclear. Measured across clips with known outcomes, everything
+containing real speech scored 72&ndash;95% and everything invented scored
+47&ndash;52%, so the threshold has clear air on both sides.</p>
+
+<p><strong>Standard calls are exempt, up to a point.</strong> Urgent traffic is
+formatted as exactly the repetition these filters look for — "mayday mayday
+mayday", "securite securite securite", "all stations, all stations, all
+stations". Suppressing those would be the worst failure this program could
+have. They are exempt, but only up to three repeats, because a real call is
+said three times and a decoder stuck on a word says it eleven.</p>
+
+<h3>4.9 Why there is no decoder prompt</h3>
+
+<p>Whisper accepts an <code>initial_prompt</code> that conditions it on
+vocabulary. The marine presets deliberately supply none.</p>
+
+<p>The reason is worth understanding, because supplying one is an obvious idea.
+A prompt does not merely make hallucination more likely — it makes it
+<em>plausible</em>. Unprompted, the model invents generic filler that the
+filters above catch easily. Prompted with marine vocabulary, it invents fluent
+marine phraseology that nothing can distinguish from real traffic.</p>
+
+<p>With distress words in the prompt, four seconds of noise decoded as
+"Securite securite, vessel mayday, this is the United States Coast..." — a
+fabricated distress call. A poorly transcribed real transmission is
+recoverable: the audio is kept and the text is marked unclear. A fabricated one
+that reads correctly is not.</p>
+
+<h3>4.10 Distress flagging</h3>
+
+<p>Any transcript containing distress vocabulary gets a red <strong>LISTEN</strong>
+badge, a tinted row, and a warning in the log.</p>
+
+<p>The badge does not mean "this is an emergency". It means <em>do not trust
+this text, play the audio</em>. A real mayday and a hallucinated one are
+identical as text and the system cannot tell them apart — so rather than
+pretend otherwise, it flags the message and leaves the judgement to a person.
+The flag fires on real calls too, which is correct.</p>
+
+<h3>4.11 The quality score</h3>
+
+<p>Each message carries a readability score from 0 to 100, shown as a
+percentage and used by the filter slider.</p>
+
+<p>It is derived from the <strong>spectral flatness</strong> of the recording:
+the geometric mean of the voice-band spectrum divided by its arithmetic mean.
+Speech has formants, so its spectrum is lumpy and the ratio sits low
+(0.01&ndash;0.15). Noise and digital modes are flat and sit near 0.55.</p>
+
+<p>Calibrated against clips whose outcome is known:</p>
+
+<table>
+  <tr><th>Score</th><th>Outcome</th></tr>
+  <tr><td>93%</td><td>Full vessel traffic report, decoded correctly</td></tr>
+  <tr><td>92%</td><td>Coast Guard securit&eacute; broadcast, decoded correctly</td></tr>
+  <tr><td>84%</td><td>Coast Guard advisory, content plus a trailing loop</td></tr>
+  <tr><td>72%</td><td>Vessel name correct, sound effect appended</td></tr>
+  <tr><td>52%</td><td>Invented narration</td></tr>
+  <tr><td>47%</td><td>Few real words, rest invented</td></tr>
+</table>
+
+<p>A slider cut around 60% separates the usable from the not. The same score
+is used internally at 65% as the threshold below which a transcript may be
+discarded outright &mdash; see &sect;4.8.</p>
+
+<div class="note">
+  <b>Why not signal strength?</b>
+  <p>The obvious measure would be signal-to-noise, and it was tried. On FM it
+  does not work. The capture effect means a 40&nbsp;dB change in carrier
+  strength moves the discriminator noise metric by about 7&nbsp;dB — and more
+  fundamentally, it measures the carrier at <em>this</em> antenna, which says
+  nothing about a distant or noisy talker at the far end. Every badly
+  transcribed clip on record arrived with a perfectly good carrier. Flatness
+  measures what actually arrived.</p>
+  <p>The carrier figure is still computed and appears in the message export as
+  <strong>Carrier</strong>, where it is useful for telling a weak link from a
+  noisy talker.</p>
+</div>
+
+<h3>4.12 Retention</h3>
+
+<p>The database keeps the most recent 100 messages. When it prunes, it does not
+simply delete the oldest — it evicts by value first:</p>
+
+<ol>
+  <li>Empty and errored messages go first</li>
+  <li>Then low-confidence ones</li>
+  <li>Then recorded-but-never-transcribed</li>
+  <li>Good transcripts last, and among equals, oldest first</li>
+</ol>
+
+<p>So a burst of noise cannot push out the traffic you wanted to keep. Deleting
+a row deletes its WAV with it.</p>
+
+<h3>4.13 Thermal governor</h3>
+
+<p>Transcription is the hottest thing the program does, and a Pi&nbsp;5 with a
+HAT fitted will sit at its soft temperature limit indefinitely under load.</p>
+
+<p>Above <code>thermal_pause_above</code> the transcriber waits before starting
+the next decode, resuming below <code>thermal_resume_below</code>, with any
+single stall capped by <code>thermal_max_wait_s</code>. Latency is nearly free
+here — traffic is sparse and the log is read after the fact — while throttling
+slows the DSP as well and risks dropped chunks. Because the queue is
+newest-first, whatever piles up during a pause is the oldest and least
+interesting.</p>
+
+<!-- ========================================================= -->
+<h2 id="files">5. Files</h2>
+
+<h3>Programs</h3>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>watchkeeper.py</code></td><td>The receiver. DSP, squelch, recording, transcription, storage.</td></tr>
+  <tr><td><code>webui.py</code></td><td>The web interface. Reads the database, serves port 8080.</td></tr>
+  <tr><td><code>watchkeeper.toml</code></td><td>All configuration: presets, channels, thresholds.</td></tr>
+  <tr><td><code>docs.html</code></td><td>This document.</td></tr>
+  <tr><td><code>refresh.sh</code></td><td>Wipes the log and recordings for a clean test. See <a href="#admin">§10</a>.</td></tr>
+</table>
+
+<h3>Service units</h3>
+<p>Copied into <code>/etc/systemd/system/</code>; the originals are kept
+alongside the programs so they travel with the rest of the software.</p>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>watchkeeper@.service</code></td><td>Starts the receiver at boot. See <a href="#boot">Running at boot</a>.</td></tr>
+  <tr><td><code>watchkeeper-web@.service</code></td><td>Starts the web interface at boot.</td></tr>
+</table>
+
+<h3>Tools</h3>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>test_dsp.py</code></td><td>DSP test suite. Run after any change to the signal path.</td></tr>
+  <tr><td><code>make_truth.py</code></td><td>Build a ground-truth corpus by ear, for benchmarking.</td></tr>
+  <tr><td><code>bench_models.py</code></td><td>Compare speech models against that corpus.</td></tr>
+  <tr><td><code>bench_hailo.py</code></td><td>The same, on the NPU.</td></tr>
+  <tr><td><code>run_bench.py</code></td><td>Runs the whole benchmark suite unattended.</td></tr>
+  <tr><td><code>analyse_bench.py</code></td><td>Re-cuts saved benchmark results without re-running.</td></tr>
+  <tr><td><code>fetch_hallucinations.py</code></td><td>Builds a filter list from the public whisper-hallucinations dataset.</td></tr>
+</table>
+
+<h3>Data</h3>
+<table>
+  <tr><th>Path</th><th>Contents</th></tr>
+  <tr><td><code>~/watchkeeper/watchkeeper.db</code></td>
+      <td>SQLite, WAL mode. Messages, transcripts, reception context.</td></tr>
+  <tr><td><code>~/watchkeeper/audio/</code></td>
+      <td>One WAV per message. <strong>On tmpfs — see below.</strong></td></tr>
+  <tr><td><code>~/wx_corpus/</code></td>
+      <td>Benchmark corpus and <code>truth.json</code>. On the card, persistent.</td></tr>
+  <tr><td><code>~/run.log</code></td>
+      <td>Only if <code>--log</code> was used on a hand-started run. Append-only,
+      <strong>no rotation</strong> — it grows without limit on the card. The
+      services do not write it; they log to the journal instead, which does
+      rotate. See <a href="#logs">Reading the log</a>.</td></tr>
+</table>
+
+<div class="warn-box">
+  <b>Recordings live in RAM</b>
+  <p>The audio directory is a tmpfs mount, so <strong>recordings do not survive
+  a reboot</strong>. This is deliberate: audio is about 1.25&nbsp;MB per minute
+  against roughly 10&nbsp;KB for the database, so putting it in RAM removes
+  about 99% of the writes to the microSD card.</p>
+  <p>The database is on the card and persists. At startup the watchkeeper drops
+  any row whose WAV has gone, so the log never lists a message it cannot play —
+  a line reading <code>removed N row(s) whose audio is gone</code> after a
+  reboot is normal, not a fault.</p>
+  <p>Anything worth keeping must be copied to the card first:
+  <code>make_truth.py --archive</code> does that.</p>
+</div>
+
+<p>The mount is configured in <code>/etc/fstab</code>:</p>
+<pre><code>tmpfs /home/pi/watchkeeper/audio tmpfs \
+      defaults,nofail,noatime,size=256M,uid=1000,gid=1000,mode=0755 0 0</code></pre>
+
+<p><code>nofail</code> matters: without it a malformed line drops the machine
+into emergency mode at boot rather than carrying on, which on a headless Pi
+means it never comes back.</p>
+
+<!-- ========================================================= -->
+<h2 id="config">6. Configuration</h2>
+
+<p>Everything lives in <code>watchkeeper.toml</code>. It is searched for in
+this order, first match wins:</p>
+<ol>
+  <li><code>./watchkeeper.toml</code></li>
+  <li><code>~/watchkeeper.toml</code></li>
+  <li><code>~/watchkeeper/watchkeeper.toml</code></li>
+</ol>
+
+<p>The file has three kinds of section. Settings are validated at load, so a
+typo or an out-of-range value is reported at startup rather than misbehaving
+later.</p>
+
+<h3><code>[storage]</code></h3>
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>base_dir</code></td><td>Sets the database and audio paths together.</td></tr>
+  <tr><td><code>audio_dir</code></td><td>Overrides just the audio path — this is what points it at tmpfs.</td></tr>
+  <tr><td><code>db_path</code></td><td>Overrides just the database path.</td></tr>
+</table>
+
+<h3><code>[radio]</code> — global defaults</h3>
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>gain</code></td><td>Tuner gain in dB. <code>"0"</code> selects the tuner's own AGC.</td></tr>
+  <tr><td><code>ppm</code></td><td>Crystal error correction. The V4's TCXO needs none.</td></tr>
+  <tr><td><code>model</code></td><td>Whisper model. <code>small.en</code>.</td></tr>
+  <tr><td><code>cpu_threads</code>, <code>beam_size</code></td><td>Decoder cost.</td></tr>
+  <tr><td><code>temperatures</code></td><td>Fallback ladder. A single entry disables retries.</td></tr>
+  <tr><td><code>max_messages</code></td><td>Retention. Default 100.</td></tr>
+  <tr><td><code>low_conf_avg_logprob</code>, <code>low_conf_no_speech</code></td>
+      <td>Where a transcript is marked unclear.</td></tr>
+</table>
+
+<h3><code>[preset.NAME]</code> — one per band or location</h3>
+
+<p>A preset sets the centre frequency, the mode, its channel list, and may
+override almost any radio or DSP setting for that preset alone. Anything it
+does not set falls back to the <code>[radio]</code> value, and settings never
+leak between presets.</p>
+
+<h4>Squelch and segmentation</h4>
+<table>
+  <tr><th>Key</th><th>Mode</th><th>Meaning</th></tr>
+  <tr><td><code>fm_open_noise</code> / <code>fm_close_noise</code></td><td>FM</td>
+      <td>Noise metric below which the carrier counts as present / absent.</td></tr>
+  <tr><td><code>squelch_dbfs</code></td><td>AM</td>
+      <td>Absolute guard rail. Must sit clear of the floor-relative threshold or
+          it silently becomes the operative one.</td></tr>
+  <tr><td><code>open_margin_db</code> / <code>close_margin_db</code></td><td>AM</td>
+      <td>dB above and below the measured floor.</td></tr>
+  <tr><td><code>hang_s</code></td><td>AM</td><td>Ride through brief dropouts.</td></tr>
+  <tr><td><code>carrier_tail_keep_s</code></td><td>FM</td>
+      <td>How much post-carrier audio reaches the file. Keep short.</td></tr>
+  <tr><td><code>min_message_s</code> / <code>max_message_s</code></td><td>both</td>
+      <td>Message length bounds.</td></tr>
+  <tr><td><code>min_snr_db</code></td><td>both</td>
+      <td>Discard threshold. <strong>Set to 0 on marine presets</strong> — on a
+          distress channel a weak transmission may be the one that matters.</td></tr>
+</table>
+
+<h4>Transcription</h4>
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>vad_filter</code></td>
+      <td>Whisper's own speech detector. <code>false</code> on marine: it
+          rejects weak transmissions outright, and the carrier squelch has
+          already established that something transmitted.</td></tr>
+  <tr><td><code>no_speech_threshold</code>, <code>log_prob_threshold</code></td>
+      <td>Raised on marine to keep marginal speech.</td></tr>
+  <tr><td><code>max_tokens_per_second</code></td><td>Output cap. 8 is generous.</td></tr>
+  <tr><td><code>prompt</code></td><td>Decoder priming. Absent on marine — see §4.9.</td></tr>
+  <tr><td><code>hallucination_list</code></td><td>Optional generated phrase list.</td></tr>
+  <tr><td><code>thermal_pause_above</code> etc.</td><td>Thermal governor. 0 disables.</td></tr>
+</table>
+
+<h4>Channels</h4>
+<pre><code>channels = [
+  { name = "Ch16 Distress", freq = 156800000 },
+  { name = "ref-a", freq = 156237500, role = "reference" },
+]</code></pre>
+
+<p>Every channel must fall within about 800&nbsp;kHz of the centre frequency to
+stay inside the flat part of the capture. Choose a centre that is clear of every
+channel by at least 37.5&nbsp;kHz and off the 25&nbsp;kHz channel grid, so the
+tuner's DC spike lands in empty spectrum.</p>
+
+<!-- ========================================================= -->
+<h2 id="presets">7. Presets</h2>
+
+<table>
+  <tr><th>Preset</th><th>Mode</th><th>Centre</th><th>For</th></tr>
+  <tr><td><code>boat</code></td><td>NFM</td><td>156.7625</td>
+      <td>At the slip. Built from a survey taken there.</td></tr>
+  <tr><td><code>marine</code></td><td>NFM</td><td>156.7625</td>
+      <td>Standard watch set for use underway.</td></tr>
+  <tr><td><code>Marine_Home</code></td><td>NFM</td><td>156.5875</td>
+      <td>Built from a survey eleven miles inland. Shore stations only.</td></tr>
+  <tr><td><code>socal_low</code></td><td>AM</td><td>124.8250</td>
+      <td>LAX area approach and ground.</td></tr>
+  <tr><td><code>socal_high</code></td><td>AM</td><td>133.6000</td>
+      <td>Centre and tower.</td></tr>
+  <tr><td><code>wx</code></td><td>NFM</td><td>162.2625</td>
+      <td>NOAA weather radio.</td></tr>
+</table>
+
+<p><code>--list-presets</code> prints the current list with channels. Preset
+names are case-sensitive.</p>
+
+<h3>Building a preset for a new location</h3>
+
+<p>Do not guess. Survey the band, then choose from what is actually there.</p>
+
+<pre><code># two hours at 5-second resolution; stop the watchkeeper first
+rtl_power -f 156M:158M:5k -g 36.4 -i 5 -e 2h ~/scan.csv</code></pre>
+
+<div class="warn-box">
+  <b>A spectrum survey cannot tell traffic from interference</b>
+  <p>Both look like energy on a channel. At one location the two busiest
+  channels in a two-hour survey turned out to be static from something in the
+  marina, and a preset was built around them before anyone listened.</p>
+  <p>The tell was in the log, not the scan: every message arrived within half a
+  decibel of the same level, with durations all under a couple of seconds.
+  Real voice does not do that. <strong>Listen to a new channel before trusting
+  it.</strong></p>
+</div>
+
+<!-- ========================================================= -->
+<h2 id="cli">8. Command line reference</h2>
+
+<h3><code>watchkeeper.py</code></h3>
+<table>
+  <tr><th>Flag</th><th>Effect</th></tr>
+  <tr><td><code>--preset NAME</code></td><td>Which preset to run.</td></tr>
+  <tr><td><code>--list-presets</code></td><td>Show all presets and exit.</td></tr>
+  <tr><td><code>--config PATH</code></td><td>Use a specific config file.</td></tr>
+  <tr><td><code>--log PATH</code></td><td>Append all output to a file as well as the console.</td></tr>
+  <tr><td><code>--monitor</code></td><td>Print live squelch metrics instead of recording. Ends with a per-channel summary.</td></tr>
+  <tr><td><code>--monitor-interval N</code></td><td>Seconds between monitor reports. Default 5.</td></tr>
+  <tr><td><code>--record PATH</code></td><td>Also write the raw I/Q stream while running.</td></tr>
+  <tr><td><code>--replay PATH</code></td><td>Read from a recorded I/Q file instead of the dongle.</td></tr>
+  <tr><td><code>--gain DB</code></td><td>Override tuner gain. <code>0</code> for the tuner's AGC.</td></tr>
+  <tr><td><code>--am-audio-hz HZ</code></td><td>Top of the AM audio passband.</td></tr>
+  <tr><td><code>--verbose</code></td><td>Debug logging.</td></tr>
+</table>
+
+<h3>Record and replay — the most useful pair</h3>
+
+<p>Comparing two settings on live radio compares two different minutes of
+traffic, which tells you very little. Record once, then replay the same I/Q as
+many times as you like:</p>
+
+<pre><code>~/venv_wx/bin/python watchkeeper.py --preset boat --record ~/cap.iq --log ~/rec.log
+# then, with the dongle free:
+~/venv_wx/bin/python watchkeeper.py --replay ~/cap.iq --monitor --log ~/a.log
+# change a setting
+~/venv_wx/bin/python watchkeeper.py --replay ~/cap.iq --monitor --log ~/b.log</code></pre>
+
+<p>Every run sees identical RF, so a difference in the summary is the setting
+and nothing else. About 2.5&nbsp;GB per ten minutes. Tuner gain is the one thing
+this cannot test, since it is baked into the capture.</p>
+
+<h3><code>webui.py</code></h3>
+<table>
+  <tr><th>Flag</th><th>Effect</th></tr>
+  <tr><td><code>--port N</code></td><td>Default 8080.</td></tr>
+  <tr><td><code>--host ADDR</code></td><td>Default <code>0.0.0.0</code>, all interfaces.</td></tr>
+  <tr><td><code>--preset NAME</code></td><td>Pin the channel legend to one preset.</td></tr>
+</table>
+
+<!-- ========================================================= -->
+<h2 id="webui">9. The web interface</h2>
+
+<p>Served on port 8080, read-only, and completely independent of the
+watchkeeper — it opens the database read-only, so it can be started, stopped
+and restarted without disturbing reception.</p>
+
+<h3>The header</h3>
+<p>Live indicator, message counts, and two chips that stay visible with the
+settings panel closed: <strong>AUTO</strong> when autoplay is on, and a red
+<strong>THROTTLED</strong> when the Pi is currently running below full speed.</p>
+
+<h3>The settings panel</h3>
+<p>Collapsed by default, state remembered per browser.</p>
+<ul>
+  <li><strong>CPU and NPU temperature</strong> and the raw throttle flags.
+      Historical flags are deliberately not shown as a warning — they persist
+      until reboot, which trains you to reboot to clear a light rather than to
+      fix anything.</li>
+  <li><strong>Quality slider</strong>, 0&ndash;90%. Hides messages below the
+      cut. Messages recorded before the score existed are never hidden.</li>
+  <li><strong>Hide No Speech</strong> and <strong>AutoPlay</strong>.</li>
+  <li><strong>Channel legend</strong>, tappable to mute a channel.</li>
+</ul>
+
+<h3>Message rows</h3>
+<p>Colour bar, age, duration, channel, quality percentage, transcript.
+Tap to play; tap again to pause. Amber quality below 60%. A red
+<strong>LISTEN</strong> badge marks distress vocabulary.</p>
+
+<h3>The download button</h3>
+<p>The small arrow at the right of each row downloads a zip containing the WAV
+and a text file — a single zip because mobile browsers commonly block the
+second of two downloads from one gesture. The text file carries reception
+context, decoder diagnostics, and an audio analysis:</p>
+
+<pre><code>RECEPTION
+  Readability         : 93% (from spectral flatness)
+  Carrier             : 16.4 dB below the no-carrier noise reading
+  Noise floor         : -56.5 dB
+  Peak before limiter : 0.676
+
+TRANSCRIPTION
+  Confidence          : empty
+  avg_logprob         : -0.39
+  Discarded because   : subtitle-corpus hallucination
+  Decoder said        : "...Thanks for watching. Please subscribe."
+
+AUDIO ANALYSIS
+  spectral flatness   : 0.084   (voice 0.01-0.15, noise ~0.55)
+  squelch muted       : 0.02 s of carrier dropout
+  content             : speech-dominated</code></pre>
+
+<p><strong>Discarded because</strong> and <strong>Decoder said</strong> are the
+two most useful lines when a message reads "no speech found" — they show
+whether the decoder returned nothing or said something that a filter removed,
+and which filter did it.</p>
+
+<!-- ========================================================= -->
+<h2 id="admin">10. Routine administration</h2>
+
+<h3>Health checks</h3>
+<pre><code>vcgencmd measure_temp                     # SoC temperature
+vcgencmd get_throttled                    # 0x0 is clean
+cat /sys/devices/platform/cooling_fan/hwmon/*/fan1_input   # fan RPM
+df -h ~/watchkeeper/audio                 # should say tmpfs
+free -h
+pgrep -a rtl_sdr                          # who holds the dongle</code></pre>
+
+<p>Throttle flags: bits 0&ndash;3 mean it is happening <em>now</em>; bits
+16&ndash;19 mean it happened at some point since boot. <code>0x80000</code> is
+historical only. <code>0xe0008</code> includes bit 3, which is live.</p>
+
+<h3 id="logs">Reading the log</h3>
+
+<p>Under the services there is no <code>~/run.log</code>. Everything both
+programs print goes to the systemd journal instead, which is a real on-disk log
+with rotation and indexing — nothing is lost, it is just read with a different
+command.</p>
+
+<pre><code>journalctl -u watchkeeper@pi -f                 # live tail, Ctrl-C to leave
+journalctl -u watchkeeper@pi -n 200             # the last 200 lines
+journalctl -u watchkeeper@pi -p warning         # warnings and errors only
+journalctl -u watchkeeper@pi --since "1 hour ago"
+journalctl -u watchkeeper@pi -b                 # since this boot
+journalctl -u watchkeeper@pi -b -1              # the boot before this one</code></pre>
+
+<p><code>-p warning</code> is the one to reach for when something is wrong: it
+hides the routine per-message traffic and leaves the complaints. <code>-b
+-1</code> is how you investigate a crash you were not watching, after the Pi has
+already come back.</p>
+
+<h4>Spotting a crash loop</h4>
+<p><code>Restart=always</code> means a program that dies immediately keeps
+coming back, and <code>systemctl is-active</code> will keep saying
+<code>active</code> for a second or two at a time. It looks healthy and is not.
+The honest check is:</p>
+<pre><code>systemctl status watchkeeper@pi</code></pre>
+<p><code>Active: activating (auto-restart)</code>, or an uptime that resets
+every few seconds, means it is failing. The traceback sits in the journal just
+above each restart line.</p>
+
+<div class="warn-box">
+  <b>Check that the journal is persistent</b>
+  <p><code>journalctl --disk-usage</code> names the directory it is using. If it
+  says <code>/run/log/journal</code>, the journal is <em>volatile</em> — held in
+  RAM and wiped at every boot, which is often the default on Raspberry Pi OS.
+  That is exactly the wrong behaviour here: a fault that takes the whole machine
+  down leaves no evidence of itself. If it says
+  <code>/var/log/journal</code>, it is on the card and survives reboots, and
+  <code>-b -1</code> works.</p>
+  <p>To make it persistent, capped so it cannot fill the card:</p>
+  <pre><code>sudo mkdir -p /var/log/journal
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=200M\nSystemMaxFileSize=20M\n' | sudo tee /etc/systemd/journald.conf.d/size.conf
+sudo systemctl restart systemd-journald</code></pre>
+  <p>200&nbsp;MB is weeks of this workload. The writes are small and appended,
+  nothing like the recordings that were moved to RAM in the first place.</p>
+</div>
+
+<h3>Radio</h3>
+<pre><code>rtl_test -t                               # find the dongle (ignore "No E4000")
+~/venv_wx/bin/python watchkeeper.py --list-presets
+~/venv_wx/bin/python watchkeeper.py --preset boat --monitor</code></pre>
+
+<h3>After changing the signal path</h3>
+<pre><code>python3 test_dsp.py                       # must end "all DSP tests passed"</code></pre>
+
+<h3>Database</h3>
+<pre><code># which channels actually produce readable text
+~/venv_wx/bin/python -c "
+import sqlite3,os
+c=sqlite3.connect(os.path.expanduser('~/watchkeeper/watchkeeper.db'))
+for r in c.execute('''select channel, count(*),
+  sum(status=\"ok\"), sum(status=\"low\"), sum(status=\"empty\")
+  from messages group by channel order by count(*) desc'''):
+    ch,n,ok,low,emp = r[0],r[1],r[2] or 0,r[3] or 0,r[4] or 0
+    print(f'{ch:<20}{n:5d} msgs{100*(ok+low)/n:6.0f}% useful')
+"</code></pre>
+
+<p>Run that after a day. A channel at 0% useful is carrying digital traffic or
+interference and is costing a receiver slot and 10% of a core.</p>
+
+<h3>Archiving audio before it evaporates</h3>
+<pre><code>~/venv_wx/bin/python make_truth.py --corpus ~/wx_corpus --archive --limit 200</code></pre>
+<p>Copies every current recording to the card along with what the decoder made
+of each. Do this before a reboot if anything is worth keeping.</p>
+
+<h3>Starting from a clean slate</h3>
+
+<p>After a software change it is often easier to judge the result against an
+empty log than to pick new messages out of old ones.
+<code>~/refresh.sh</code> does that:</p>
+
+<pre><code>#!/bin/sh
+echo "Deleting Message log and audio files"
+
+sqlite3 ~/watchkeeper/watchkeeper.db "delete from messages;"
+rm -f ~/watchkeeper/audio/*
+
+echo "Ready to run"</code></pre>
+
+<p>Two things worth knowing about it:</p>
+<ul>
+  <li><strong>Stop the watchkeeper first</strong>
+      (<code>sudo systemctl stop watchkeeper@pi</code>, or Ctrl-C if you
+      started it by hand). Nothing is corrupted if you do not — SQLite handles the concurrent access and the startup
+      reconciliation tidies up afterwards — but a recording deleted while the
+      transcriber is reading it comes back as an <code>error</code> row, which
+      is confusing when you are looking for the effect of a change.</li>
+  <li><strong>It wipes the audio too</strong>, and the audio is in RAM. Archive
+      anything worth keeping first, with the command above.</li>
+</ul>
+
+<p>The <code>-f</code> on the <code>rm</code> suppresses the "No such file or
+directory" complaint when the directory is already empty, which it will be
+after any reboot.</p>
+
+<h3 id="boot">Running at boot</h3>
+
+<p>Both programs ship as systemd units, so the Pi can be powered up unattended
+and come back on its own after a power cut. The units are <i>templated</i>: the
+part after the <code>@</code> is the username they run as, which is how the
+same file works for any account without editing paths.</p>
+
+<h4>Installing</h4>
+<pre><code>sudo cp watchkeeper@.service watchkeeper-web@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+sudo systemctl enable --now watchkeeper@pi
+sudo systemctl enable --now watchkeeper-web@pi</code></pre>
+
+<p><code>enable</code> makes it start at boot; <code>--now</code> also starts it
+immediately so you do not have to reboot to test. Check both:</p>
+
+<pre><code>systemctl status watchkeeper@pi
+journalctl -u watchkeeper@pi -f      # live log, Ctrl-C to leave
+journalctl -u watchkeeper@pi -n 50   # the last 50 lines
+journalctl -u watchkeeper@pi -b      # everything since this boot</code></pre>
+
+<h4>Day to day</h4>
+<table>
+<tr><th>Command</th><th>What it does</th></tr>
+<tr><td><code>sudo systemctl restart watchkeeper@pi</code></td><td>Pick up a code or config change</td></tr>
+<tr><td><code>sudo systemctl stop watchkeeper@pi</code></td><td>Release the radio (see the warning below)</td></tr>
+<tr><td><code>sudo systemctl start watchkeeper@pi</code></td><td>Start it again</td></tr>
+<tr><td><code>sudo systemctl disable watchkeeper@pi</code></td><td>Stop it coming back at the next boot</td></tr>
+</table>
+
+<p>The web interface is a separate unit and restarts independently — swapping
+<code>webui.py</code> does not interrupt capture, and vice versa. Substitute
+<code>watchkeeper-web@pi</code> in any of the above.</p>
+
+<div class="warn-box">
+  <b>An enabled service holds the radio from boot</b>
+  <p>This is the same "one radio, one program" rule as before, but now it
+  applies without you having started anything. <code>rtl_power</code>, gqrx and
+  <code>--record</code> will all fail to open the device with the service
+  running. Before a spectrum survey:</p>
+  <pre><code>sudo systemctl stop watchkeeper@pi
+# ... run the survey ...
+sudo systemctl start watchkeeper@pi</code></pre>
+  <p><code>stop</code> is temporary — it does not affect the next boot.</p>
+</div>
+
+<h4>What the units do beyond starting the program</h4>
+<ul>
+<li><b>No <code>--log</code> file.</b> Output goes to the journal, which rotates
+    itself. A <code>--log</code> file does not, and grows without limit on the
+    SD card. Use <code>journalctl</code> instead of <code>tail ~/run.log</code>.</li>
+<li><b><code>RequiresMountsFor</code></b> on the audio directory. Without it the
+    watchkeeper can start before the tmpfs mount and write underneath the mount
+    point; the files then vanish from view when the mount appears, and the
+    database references recordings that cannot be found.</li>
+<li><b>Thread limits.</b> <code>OMP_NUM_THREADS</code> and
+    <code>OPENBLAS_NUM_THREADS</code> stop the maths libraries spawning a thread
+    per core on top of the <code>cpu_threads</code> the transcriber already
+    asked for. That over-subscription was a real part of the thermal load.</li>
+<li><b><code>Nice</code>.</b> Capture runs at &minus;5 and the web interface at
+    +5, so neither is starved by the transcriber, which runs flat out by
+    design.</li>
+<li><b><code>Restart=always</code></b> with a 10 second delay, which covers the
+    cases the program's internal retries cannot — the dongle being unplugged,
+    for instance.</li>
+<li><b><code>KillSignal=SIGINT</code></b> so a stop is the same clean shutdown
+    as Ctrl-C: the database closes properly and the in-progress recording is
+    flushed rather than left as a stub.</li>
+</ul>
+
+<p>The preset is named in <code>ExecStart</code>. To change which one runs at
+boot, edit that line in <code>/etc/systemd/system/watchkeeper@.service</code>,
+then <code>sudo systemctl daemon-reload</code> and restart the service.</p>
+
+<h3>Deployment</h3>
+<pre><code>scp watchkeeper.py pi@raspberrypi.local:/home/pi/</code></pre>
+<p>If the Pi is on a boat, it will move between networks and its LAN address
+will change with each one. Putting it on a <a
+href="https://tailscale.com/">Tailscale</a> tailnet gives it a name that works
+from anywhere, including over cellular, without opening anything to the
+internet:</p>
+<pre><code>scp watchkeeper.py pi@&lt;host&gt;.&lt;tailnet&gt;.ts.net:/home/pi/</code></pre>
+<p>The web interface then follows at the same name on port 8080.</p>
+
+<!-- ========================================================= -->
+<h2 id="trouble">11. Troubleshooting</h2>
+
+<h3>Nothing is being received</h3>
+<ol>
+  <li><code>systemctl status watchkeeper@pi</code> — is it actually
+      running? <code>journalctl -u watchkeeper@pi -n 50</code> shows why
+      not if it is restarting in a loop.</li>
+  <li><code>pgrep -a rtl_sdr</code> — is something else holding the dongle? If
+      the boot service is enabled, it holds the radio from power-on, which is
+      the usual reason a survey or gqrx cannot open the device.</li>
+  <li><code>rtl_test -t</code> — is the dongle found at all? "No E4000 tuner
+      found" is expected and not a fault; this receiver has an R828D.</li>
+  <li>Check the log for <code>squelch calibrated</code>. Nothing records during
+      the twenty seconds before it appears.</li>
+  <li><code>--monitor</code> for five minutes and read the peak column. Peaks
+      near the floor mean the band genuinely is quiet.</li>
+  <li>Check the antenna connector. A large drop in reference channel power
+      raises an alarm in the log.</li>
+</ol>
+
+<h3>Transcripts are garbled</h3>
+<p>Check the quality score first. Below about 60% the audio does not contain
+recoverable speech and no setting will change that — the fix is the antenna or
+the location. Above 80% with poor text is worth investigating.</p>
+<p>Download the message and read <strong>spectral flatness</strong> and
+<strong>squelch muted</strong>. A large muted figure means the carrier was
+breaking up and the decoder was working from fragments.</p>
+
+<h3>A message reads "no speech found" but there was clearly speech</h3>
+<p>Download it and read <strong>Discarded because</strong> and <strong>Decoder
+said</strong>. That names the filter and shows what it removed. If a filter is
+discarding real traffic, the raw text is the evidence needed to fix it.</p>
+<p>Above 65% readability this should no longer happen: a transcript that clean
+is trimmed rather than discarded. If you see it anyway, the readability figure
+in the same export is the first thing to check &mdash; and the pairing of a
+high score with a discarded transcript is worth reporting, because it means a
+filter is firing on something it should not.</p>
+
+<h3>The Pi is throttling</h3>
+<p>In order of effect:</p>
+<ol>
+  <li>Check the fan is actually spinning. It is easy to leave the connector
+      half-seated after any work on the case.</li>
+  <li>Remove the AI HAT if fitted. It is not used, it sits directly over the
+      SoC blocking the cooler's airflow, and it was measured costing several
+      degrees of headroom at idle.</li>
+  <li>Drop a channel. Each receiver is roughly 10% of a core.</li>
+  <li>Lower <code>cpu_threads</code> to 2, or <code>temperatures</code> to a
+      single entry.</li>
+  <li>Lower <code>thermal_pause_above</code> so the governor intervenes sooner.</li>
+</ol>
+<p>Compare idle temperature against ambient. Roughly 30&nbsp;°C above ambient at
+idle is normal for this configuration; 40&nbsp;°C above suggests a cooling
+fault rather than a workload problem.</p>
+
+<h3>"DSP behind real time: dropped N chunks"</h3>
+<p>The channelizer could not keep up and capture was lost. Usually a symptom of
+throttling rather than a cause. Treat it as a thermal problem first, then
+reduce the channel count.</p>
+
+<h3>The web interface shows nothing</h3>
+<ol>
+  <li>Is the watchkeeper running and past calibration?</li>
+  <li>Open the browser console. A JavaScript error stops the page updating
+      entirely while still rendering the header.</li>
+  <li><code>curl -s localhost:8080/api/messages | head -c 300</code> — if the
+      API returns data, the problem is in the page, not the database.</li>
+</ol>
+<p>Broken-pipe messages in the web interface log are normal: a browser closing
+an audio stream mid-transfer does that every time you seek or navigate away.</p>
+
+<h3>After a reboot</h3>
+<p><code>removed N row(s) whose audio is gone</code> is expected — recordings
+are in RAM. If <code>findmnt -n -o FSTYPE ~/watchkeeper/audio</code> does not
+say <code>tmpfs</code>, the mount failed and writes are going to the card.</p>
+<p>If the services did not come back, <code>systemctl is-enabled
+watchkeeper@pi</code> should say <code>enabled</code>. A unit that starts
+by hand but not at boot is nearly always the audio mount: the service waits for
+it, and if <code>/etc/fstab</code> is wrong the wait never ends.
+<code>systemctl status home-pi-watchkeeper-audio.mount</code> shows
+whether the mount itself came up.</p>
+
+<h3>gqrx will not let you change anything</h3>
+<p>The dropdowns are dead because the Qt popup rendering is broken over the
+remote desktop, not because of anything in gqrx. Other dropdowns in the I/O
+dialog fail the same way. GTK menus work, which localises it to Qt. A Debian
+security update to the Qt6 stack is the suspected cause.</p>
+<p>gqrx is not required. <code>--monitor</code> gives noise floor, per-channel
+peaks and open counts; <code>rtl_power</code> gives a spectrum survey.</p>
+
+<!-- ========================================================= -->
+<h2 id="limits">12. Known limits</h2>
+
+<h3>Transcription accuracy</h3>
+<p>Seven configurations were benchmarked against a hand-transcribed corpus.
+Median word error rate on marine traffic:</p>
+
+<table>
+  <tr><th>Model</th><th>WER</th><th>Notes</th></tr>
+  <tr><td><code>medium.en</code></td><td>0.53</td><td>Triple the cost of small for almost nothing</td></tr>
+  <tr><td><code>small.en</code></td><td>0.60</td><td><strong>In use</strong></td></tr>
+  <tr><td><code>distil-small.en</code></td><td>0.80</td><td>Lost badly despite the promise</td></tr>
+  <tr><td><code>distil-medium.en</code></td><td>0.80</td><td>Same</td></tr>
+  <tr><td><code>base.en</code>, <code>tiny.en</code></td><td>1.00</td><td>Unusable</td></tr>
+  <tr><td>Hailo NPU, <code>base</code></td><td>1.00</td><td>3% of clips readable vs 32% for small.en</td></tr>
+</table>
+
+<p>Model selection is a dead end on this hardware. Signal quality is the binding
+constraint, and it is fixed with an antenna, not a setting.</p>
+
+<h3>The AI HAT+ 2</h3>
+<p>Benchmarked and not used for speech. <code>base</code> is the largest variant
+the Hailo apps offer, and both <code>tiny</code> variants return punctuation
+soup because their decoder architecture is mishandled. The NPU runs about 28&nbsp;°C
+cooler and leaves the CPU free, but it cannot match <code>small.en</code>.</p>
+<p>Its remaining value is classification — triaging recent messages by
+importance, extracting vessel names and channel numbers. That is genuinely
+beyond the Pi's cores and cannot fabricate a transcript, which makes it the safe
+use. It is not built.</p>
+
+<h3>Things that sound like good ideas and are not</h3>
+<ul>
+  <li><strong>Priming the decoder with marine vocabulary.</strong> Makes
+      hallucinations fluent and plausible instead of obviously wrong. See §4.9.</li>
+  <li><strong>Lowering <code>compression_ratio_threshold</code>.</strong> On
+      short transmissions this rejects real Coast Guard broadcasts while
+      passing "Gun, gun, gun" — the metric assumes long-form text where a loop
+      dominates. It also only gates a retry, so with a single temperature it
+      does nothing at all.</li>
+  <li><strong>Filtering on <code>no_speech_prob</code>.</strong> Measured
+      anti-correlated with quality on this traffic: the highest value on record
+      belongs to a correctly decoded Coast Guard securit&eacute; broadcast.</li>
+  <li><strong>Using SNR to filter weak messages.</strong> On FM the figure ran
+      backwards. See §4.11.</li>
+  <li><strong>An LLM pass to clean up transcripts.</strong> It would turn
+      unintelligible noise into fluent, plausible, invented marine phraseology,
+      and the result would be more convincing than the original. Anything an
+      LLM produces should sit beside the transcript, attributed, never replace
+      it.</li>
+</ul>
+
+<h3>Two dongles</h3>
+<p>Channels more than about 800&nbsp;kHz apart cannot share a capture. Watching
+121.5 alongside 125.35, for instance, spans 4.25&nbsp;MHz and needs a second
+receiver.</p>
+
+<footer>
+  <p>Radio Log &middot; operator and maintenance guide &middot;
+     revised 20 September 2026.</p>
+  <p><a class="toplink" href="/">&larr; back to the log</a></p>
+</footer>
+
+</div>
+</body>
+</html>
