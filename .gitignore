@@ -1,0 +1,22 @@
+# Runtime data -- none of this belongs in the repository
+watchkeeper/
+audio/
+*.db
+*.db-wal
+*.db-shm
+*.wav
+*.iq
+*.iq.json
+*.log
+*.csv
+
+# Benchmark corpus and results
+wx_corpus/
+bench_*.json
+truth.json
+
+# Python
+__pycache__/
+*.py[cod]
+venv*/
+.venv/
