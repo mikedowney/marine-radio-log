@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101A1F">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%237FB2C4' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M16 29V12'/%3E%3Cpath d='M10.5 6.5a9 9 0 0 0 0 11'/%3E%3Cpath d='M21.5 6.5a9 9 0 0 1 0 11'/%3E%3Cpath d='M6.5 3a14 14 0 0 0 0 18'/%3E%3Cpath d='M25.5 3a14 14 0 0 1 0 18'/%3E%3C/g%3E%3Ccircle cx='16' cy='9' r='3' fill='%237FB2C4'/%3E%3C/svg%3E">
+<title>{{STATION}} &mdash; traffic brief</title>
+<style>
+  :root {
+    --ground:#101A1F; --panel:#16242B; --panel-2:#1B2D35; --rule:#24373F;
+    --text:#DCE7EA; --dim:#7C949D; --dimmer:#55696F;
+    --accent:#7FB2C4; --warn:#C9A227; --bad:#D9776A; --good:#5FB3A8;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:15px; line-height:1.6; }
+  header { padding:14px 16px 12px; border-bottom:1px solid var(--rule);
+    background:rgba(16,26,31,.96); position:sticky; top:0; z-index:5; }
+  h1 { margin:0; font-size:17px; font-weight:600; letter-spacing:.2px; }
+  h1 a { color:var(--dim); font-size:13px; font-weight:400;
+    text-decoration:none; margin-left:10px; }
+  h1 a:hover { color:var(--text); text-decoration:underline; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+    margin-top:10px; }
+  button, select, .btn { background:var(--panel-2); border:1px solid var(--rule);
+    color:var(--dim); border-radius:6px; padding:6px 12px; font-size:13px;
+    cursor:pointer; font-family:inherit; text-decoration:none; }
+  button:hover, .btn:hover { border-color:var(--dimmer); color:var(--text); }
+  button.go { background:var(--accent); border-color:var(--accent);
+    color:#0C171C; font-weight:600; }
+  button.go:hover { filter:brightness(1.1); color:#0C171C; }
+  button[disabled] { opacity:.45; cursor:not-allowed; filter:none; }
+  main { padding:16px; max-width:900px; }
+  .status { background:var(--panel); border:1px solid var(--rule);
+    border-radius:8px; padding:12px 14px; margin:0 0 16px; display:none; }
+  .status.on { display:block; }
+  .status .line { display:flex; align-items:center; gap:10px;
+    font-size:14px; flex-wrap:wrap; }
+  .status .clock { font-variant-numeric:tabular-nums; font-size:20px;
+    font-weight:600; color:var(--text); min-width:72px; }
+  .status.err { border-color:var(--bad); }
+  .status.err .step { color:var(--bad); }
+  .step { color:var(--dim); }
+  .note { color:var(--dimmer); font-size:12.5px; margin:8px 0 0; }
+  .spin { width:13px; height:13px; border:2px solid var(--rule);
+    border-top-color:var(--accent); border-radius:50%;
+    animation:sp 1s linear infinite; flex:none; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce) { .spin { animation:none; } }
+  .meta { font-size:12.5px; color:var(--dim); margin:0 0 14px;
+    padding-bottom:12px; border-bottom:1px solid var(--rule); }
+  .meta b { color:var(--text); font-weight:600; }
+  #report { background:var(--panel); border:1px solid var(--rule);
+    border-radius:8px; padding:4px 18px 18px; }
+  #report h2 { font-size:17px; margin:22px 0 8px; color:var(--text);
+    border-bottom:1px solid var(--rule); padding-bottom:6px; }
+  #report h3 { font-size:15px; margin:18px 0 6px; color:var(--accent); }
+  #report p, #report li { font-size:14.5px; }
+  #report a { color:var(--accent); }
+  #report table { border-collapse:collapse; width:100%; margin:10px 0;
+    font-size:13.5px; }
+  #report th, #report td { border:1px solid var(--rule); padding:6px 9px;
+    text-align:left; vertical-align:top; }
+  #report th { background:var(--panel-2); color:var(--dim); font-weight:600; }
+  #report code { background:var(--panel-2); padding:1px 5px; border-radius:4px;
+    font-size:12.5px; }
+  .empty { color:var(--dim); padding:36px 4px; text-align:center; }
+  .kml { margin:16px 0 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{STATION}} &mdash; traffic brief<a href="/">back to log</a><a href="/docs#brief">about this</a></h1>
+  <div class="bar">
+    <button type="button" class="go" id="run">Run analysis</button>
+    <select id="history" title="earlier briefs"></select>
+    <a class="btn" id="kml" style="display:none">Download KML</a>
+  </div>
+</header>
+
+<main>
+  <div class="status" id="status">
+    <div class="line">
+      <span class="spin" id="spin"></span>
+      <span class="clock" id="clock">0:00</span>
+      <span class="step" id="step">starting</span>
+    </div>
+    <p class="note" id="note">The model reads the last 24 hours of traffic and
+      writes the brief in one pass. This normally takes a few minutes. You can
+      leave this page &mdash; the run continues on the receiver and the report
+      will be here when you come back.</p>
+  </div>
+
+  <div class="meta" id="meta" style="display:none"></div>
+  <div id="report"></div>
+  <div class="empty" id="empty">No brief has been run yet.</div>
+</main>
+
+<script>
+"use strict";
+var poll = null, tick = null, startedAt = null, current = null;
+
+function el(id) { return document.getElementById(id); }
+
+function mmss(s) {
+  s = Math.max(0, Math.round(s));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function showStatus(on, cls) {
+  var b = el("status");
+  b.className = "status" + (on ? " on" : "") + (cls ? " " + cls : "");
+}
+
+function startClock() {
+  if (tick) { clearInterval(tick); }
+  tick = setInterval(function () {
+    if (startedAt) { el("clock").textContent = mmss((Date.now() - startedAt) / 1000); }
+  }, 250);
+}
+
+function stopClock() { if (tick) { clearInterval(tick); tick = null; } }
+
+function setRunning(st) {
+  showStatus(true);
+  el("spin").style.display = "";
+  el("step").textContent = st.step || "working";
+  el("run").disabled = true;
+  el("run").textContent = "Running…";
+  // Trust the server's elapsed over the browser's, so a reload mid-run shows
+  // the true age of the job rather than restarting the stopwatch at zero.
+  startedAt = Date.now() - (st.elapsed || 0) * 1000;
+  el("clock").textContent = mmss(st.elapsed || 0);
+  startClock();
+}
+
+function setIdle() {
+  el("run").disabled = false;
+  el("run").textContent = "Run analysis";
+  stopClock();
+}
+
+function setError(msg, elapsed) {
+  showStatus(true, "err");
+  el("spin").style.display = "none";
+  el("clock").textContent = mmss(elapsed || 0);
+  el("step").textContent = msg;
+  el("note").textContent = "Nothing was saved. The receiver and the log are " +
+    "unaffected — only this request failed.";
+  setIdle();
+}
+
+function check() {
+  fetch("/api/brief/status").then(function (r) { return r.json(); })
+    .then(function (st) {
+      if (st.state === "running") {
+        setRunning(st);
+        if (!poll) { poll = setInterval(check, 2000); }
+        return;
+      }
+      if (poll) { clearInterval(poll); poll = null; }
+      setIdle();
+      if (st.state === "error") { setError(st.error || "the run failed", st.elapsed); return; }
+      showStatus(false);
+      if (st.state === "done" && st.id && st.id !== current) { load(st.id); }
+      refreshHistory();
+    })
+    .catch(function () {
+      if (poll) { clearInterval(poll); poll = null; }
+      setError("lost contact with the receiver", 0);
+    });
+}
+
+el("run").addEventListener("click", function () {
+  el("run").disabled = true;
+  el("note").textContent = "The model reads the last 24 hours of traffic and " +
+    "writes the brief in one pass. This normally takes a few minutes. You can " +
+    "leave this page — the run continues on the receiver and the report " +
+    "will be here when you come back.";
+  showStatus(true);
+  el("spin").style.display = "";
+  el("step").textContent = "starting";
+  el("clock").textContent = "0:00";
+  startedAt = Date.now();
+  startClock();
+  fetch("/api/brief/run", { method: "POST" })
+    .then(function (r) { return r.json(); })
+    .then(function (st) {
+      if (st.error) { setError(st.error, 0); return; }
+      if (!poll) { poll = setInterval(check, 2000); }
+      check();
+    })
+    .catch(function () { setError("could not start the run", 0); });
+});
+
+function load(id) {
+  fetch("/api/brief/" + encodeURIComponent(id))
+    .then(function (r) { return r.json(); })
+    .then(function (b) {
+      if (b.error) { return; }
+      current = b.id;
+      el("empty").style.display = "none";
+      el("report").innerHTML = b.html || "<p>The model returned nothing.</p>";
+      var when = new Date(b.created * 1000);
+      var bits = [
+        "<b>" + when.toLocaleString() + "</b>",
+        b.messages + " transmissions",
+        b.model,
+        Math.round(b.elapsed_s) + " s"
+      ];
+      if (b.usage && b.usage.total_tokens) {
+        bits.push(b.usage.total_tokens.toLocaleString() + " tokens");
+      }
+      el("meta").innerHTML = bits.join(" &middot; ") +
+        "<br>Position used: " + escapeHtml(b.position || "unknown");
+      el("meta").style.display = "";
+      var k = el("kml");
+      if (b.has_kml) {
+        k.style.display = "";
+        k.href = "/brief/" + encodeURIComponent(b.id) + "/vhf-alert-locations.kml";
+        k.setAttribute("download", "vhf-alert-locations.kml");
+      } else { k.style.display = "none"; }
+      if (el("history").value !== b.id) { el("history").value = b.id; }
+    });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+
+function refreshHistory() {
+  fetch("/api/brief/list").then(function (r) { return r.json(); })
+    .then(function (d) {
+      var sel = el("history"), rows = d.briefs || [];
+      sel.innerHTML = "";
+      if (!rows.length) { sel.style.display = "none"; return; }
+      sel.style.display = "";
+      rows.forEach(function (b) {
+        var o = document.createElement("option");
+        o.value = b.id;
+        o.textContent = new Date(b.created * 1000).toLocaleString() +
+          "  (" + b.messages + " msgs)";
+        sel.appendChild(o);
+      });
+      if (current) { sel.value = current; }
+      else if (rows.length) { load(rows[0].id); }
+    });
+}
+
+el("history").addEventListener("change", function () { load(el("history").value); });
+
+refreshHistory();
+check();
+</script>
+</body>
+</html>

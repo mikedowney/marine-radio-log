@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101A1F">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%237FB2C4' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M16 29V12'/%3E%3Cpath d='M10.5 6.5a9 9 0 0 0 0 11'/%3E%3Cpath d='M21.5 6.5a9 9 0 0 1 0 11'/%3E%3Cpath d='M6.5 3a14 14 0 0 0 0 18'/%3E%3Cpath d='M25.5 3a14 14 0 0 1 0 18'/%3E%3C/g%3E%3Ccircle cx='16' cy='9' r='3' fill='%237FB2C4'/%3E%3C/svg%3E">
+<title>{{STATION}} &mdash; export</title>
+<style>
+  :root {
+    --ground:#101A1F; --panel:#16242B; --panel-2:#1B2D35; --rule:#24373F;
+    --text:#DCE7EA; --dim:#7C949D; --dimmer:#55696F;
+    --accent:#7FB2C4; --warn:#C9A227; --bad:#D9776A;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:14px; }
+  header { padding:14px 16px 12px; border-bottom:1px solid var(--rule);
+    background:rgba(16,26,31,.96); }
+  h1 { margin:0; font-size:17px; font-weight:600; letter-spacing:.2px; }
+  h1 a { color:var(--dim); font-size:13px; font-weight:400;
+    text-decoration:none; margin-left:10px; }
+  h1 a:hover { color:var(--text); text-decoration:underline; }
+  main { padding:14px 16px 32px; max-width:760px; }
+  fieldset { border:1px solid var(--rule); border-radius:8px;
+    background:var(--panel); margin:0 0 14px; padding:10px 12px 12px; }
+  legend { font-size:11px; color:var(--dim); text-transform:uppercase;
+    letter-spacing:.7px; padding:0 6px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .row + .row { margin-top:8px; }
+  button, .btn { background:var(--panel-2); border:1px solid var(--rule);
+    color:var(--dim); border-radius:6px; padding:6px 12px; font-size:13px;
+    cursor:pointer; font-family:inherit; text-decoration:none;
+    display:inline-block; }
+  button:hover, .btn:hover { border-color:var(--dimmer); color:var(--text); }
+  button[aria-pressed="true"] { background:#24414D; border-color:var(--accent);
+    color:var(--text); }
+  button.go { background:var(--accent); border-color:var(--accent);
+    color:#0C171C; font-weight:600; padding:9px 18px; font-size:14px; }
+  button.go:hover { filter:brightness(1.1); color:#0C171C; }
+  button.go[disabled] { opacity:.45; cursor:not-allowed; filter:none; }
+  label.chk { display:inline-flex; align-items:center; gap:6px;
+    background:var(--panel-2); border:1px solid var(--rule); border-radius:6px;
+    padding:5px 10px; font-size:13px; color:var(--dim); cursor:pointer; }
+  label.chk:hover { border-color:var(--dimmer); color:var(--text); }
+  label.chk input { accent-color:var(--accent); margin:0; }
+  label.chk.on { background:#24414D; border-color:var(--accent);
+    color:var(--text); }
+  label.chk .n { color:var(--dimmer); font-size:11px;
+    font-variant-numeric:tabular-nums; }
+  label.chk.on .n { color:var(--dim); }
+  input[type=datetime-local], input[type=number] { background:var(--panel-2);
+    border:1px solid var(--rule); color:var(--text); border-radius:6px;
+    padding:5px 8px; font-size:13px; font-family:inherit; }
+  input[type=number] { width:96px; }
+  .sub { font-size:12px; color:var(--dim); }
+  .hint { font-size:12.5px; color:var(--dim); line-height:1.55;
+    margin:8px 2px 0; max-width:64ch; }
+  .when { display:none; margin-top:9px; }
+  .when.on { display:block; }
+  .url { margin-top:4px; background:var(--panel); border:1px solid var(--rule);
+    border-radius:8px; padding:9px 11px; font-family:ui-monospace,
+    SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim);
+    word-break:break-all; line-height:1.5; }
+  .count { margin:12px 0 0; font-size:13px; color:var(--dim); min-height:20px; }
+  .count b { color:var(--text); font-size:17px; font-weight:600;
+    font-variant-numeric:tabular-nums; }
+  .count.bad { color:var(--bad); }
+  .count.warn b { color:var(--warn); }
+  .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+    margin-top:14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{STATION}} &mdash; export<a href="/">back to log</a><a href="/docs#export">format notes</a></h1>
+</header>
+
+<main>
+
+<fieldset>
+  <legend>Channels</legend>
+  <div class="row" id="chanbtns">
+    <button type="button" id="all">All</button>
+    <button type="button" id="none">None</button>
+  </div>
+  <div class="row" id="chans" style="margin-top:8px"><span class="sub">loading&hellip;</span></div>
+</fieldset>
+
+<fieldset>
+  <legend>Time</legend>
+  <div class="row" id="modes">
+    <button type="button" data-mode="all" aria-pressed="true">All time</button>
+    <button type="button" data-mode="age">Recent</button>
+    <button type="button" data-mode="range">Date range</button>
+  </div>
+
+  <div class="when" id="w-age">
+    <div class="row">
+      <button type="button" class="h" data-h="1">1 h</button>
+      <button type="button" class="h" data-h="6">6 h</button>
+      <button type="button" class="h" data-h="24">24 h</button>
+      <button type="button" class="h" data-h="72">3 d</button>
+      <button type="button" class="h" data-h="168">7 d</button>
+      <label class="sub" style="margin-left:4px">or
+        <input type="number" id="hours" min="0.1" step="0.5" value="24"> hours</label>
+    </div>
+  </div>
+
+  <div class="when" id="w-range">
+    <div class="row">
+      <label class="sub">from <input type="datetime-local" id="from"></label>
+      <label class="sub">to <input type="datetime-local" id="to"></label>
+      <button type="button" id="clearrange">clear</button>
+    </div>
+    <p class="hint">Entered in this device's local time and sent with its
+      offset, so the result matches the clock you typed &mdash; the log itself
+      records UTC. Leave either side blank for an open end.</p>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Content</legend>
+  <div class="row">
+    <label class="chk on"><input type="checkbox" id="text" checked> only messages with a transcript</label>
+  </div>
+  <div class="row">
+    <label class="sub">readability at least
+      <input type="number" id="minq" min="0" max="100" step="5" placeholder="any"></label>
+    <label class="sub">lasting at least
+      <input type="number" id="mind" min="0" max="3600" step="0.5" placeholder="any"> s</label>
+    <button type="button" id="clearthresh">clear</button>
+  </div>
+  <p class="hint">A gated or failed message has no transcript at all, which is
+    most of what the receiver logs on a quiet channel. Thresholds let through
+    any row that has no recorded value &mdash; the same rule the log's own
+    sliders use &mdash; so an old row with no readability score survives a
+    readability floor rather than vanishing from a dataset without saying so.</p>
+</fieldset>
+
+<fieldset>
+  <legend>Rows</legend>
+  <div class="row">
+    <label class="sub">at most <input type="number" id="limit" min="1"
+      max="100000" step="100" value="5000"> rows</label>
+    <button type="button" id="order" data-v="desc">newest first</button>
+    <label class="chk"><input type="checkbox" id="audio"> only rows whose audio still exists</label>
+    <label class="chk"><input type="checkbox" id="positions"> parse positions</label>
+  </div>
+</fieldset>
+
+<div class="url" id="url">&nbsp;</div>
+<p class="count" id="count">&nbsp;</p>
+
+<div class="actions">
+  <button type="button" class="go" id="dl">Download JSON</button>
+  <a class="btn" id="view" href="#" target="_blank" rel="noopener">Open in a tab</a>
+  <button type="button" id="copy">Copy URL</button>
+</div>
+
+<p class="hint">The export reads the permanent <code>history</code> table, so
+it reaches every message ever recorded &mdash; not just the ones still in the
+live log &mdash; and carries the receive-chain and decoder columns the log
+page leaves out. Audio is a different matter: the WAV is gone long before the
+transcript is, so <em>only rows whose audio still exists</em> is a much
+smaller set than it looks.</p>
+
+<script>
+"use strict";
+var chans = [], picked = new Set(), mode = "all", countTimer = null, seq = 0;
+
+function el(id) { return document.getElementById(id); }
+
+function pressed(btn, on) { btn.setAttribute("aria-pressed", on ? "true" : "false"); }
+
+// --- channel list ---------------------------------------------------------
+fetch("/api/export/channels").then(function (r) { return r.json(); })
+  .then(function (d) {
+    chans = d.channels || [];
+    var box = el("chans");
+    box.innerHTML = "";
+    if (!chans.length) { box.innerHTML = '<span class="sub">no messages recorded yet</span>'; return; }
+    chans.forEach(function (c) {
+      var l = document.createElement("label");
+      l.className = "chk";
+      var i = document.createElement("input");
+      i.type = "checkbox"; i.value = c.key;
+      i.addEventListener("change", function () {
+        if (i.checked) { picked.add(c.key); } else { picked.delete(c.key); }
+        l.classList.toggle("on", i.checked);
+        update();
+      });
+      l.appendChild(i);
+      l.appendChild(document.createTextNode(c.channel));
+      var n = document.createElement("span");
+      n.className = "n"; n.textContent = c.messages.toLocaleString();
+      l.appendChild(n);
+      box.appendChild(l);
+    });
+    update();
+  })
+  .catch(function () {
+    el("chans").innerHTML = '<span class="sub">could not reach the server</span>';
+  });
+
+function setAll(on) {
+  picked.clear();
+  var boxes = el("chans").querySelectorAll("input");
+  for (var i = 0; i < boxes.length; i++) {
+    boxes[i].checked = on;
+    boxes[i].parentNode.classList.toggle("on", on);
+    if (on) { picked.add(boxes[i].value); }
+  }
+  update();
+}
+el("all").addEventListener("click", function () { setAll(true); });
+el("none").addEventListener("click", function () { setAll(false); });
+
+// --- time mode ------------------------------------------------------------
+el("modes").addEventListener("click", function (e) {
+  var b = e.target.closest("button[data-mode]");
+  if (!b) { return; }
+  mode = b.dataset.mode;
+  var all = el("modes").querySelectorAll("button");
+  for (var i = 0; i < all.length; i++) { pressed(all[i], all[i] === b); }
+  el("w-age").classList.toggle("on", mode === "age");
+  el("w-range").classList.toggle("on", mode === "range");
+  update();
+});
+
+var hourBtns = document.querySelectorAll("button.h");
+for (var i = 0; i < hourBtns.length; i++) {
+  hourBtns[i].addEventListener("click", function (e) {
+    el("hours").value = e.currentTarget.dataset.h;
+    update();
+  });
+}
+
+el("clearrange").addEventListener("click", function () {
+  el("from").value = ""; el("to").value = ""; update();
+});
+
+el("order").addEventListener("click", function () {
+  var b = el("order");
+  var next = b.dataset.v === "desc" ? "asc" : "desc";
+  b.dataset.v = next;
+  b.textContent = next === "desc" ? "newest first" : "oldest first";
+  update();
+});
+
+el("clearthresh").addEventListener("click", function () {
+  el("minq").value = ""; el("mind").value = ""; update();
+});
+
+["hours", "from", "to", "limit", "audio", "positions", "text", "minq",
+ "mind"].forEach(function (id) {
+  el(id).addEventListener("input", update);
+  el(id).addEventListener("change", update);
+});
+["audio", "positions", "text"].forEach(function (id) {
+  el(id).addEventListener("change", function () {
+    el(id).parentNode.classList.toggle("on", el(id).checked);
+  });
+});
+
+// --- the query ------------------------------------------------------------
+//
+// datetime-local hands back wall-clock text with no zone, and the endpoint
+// reads an unzoned stamp as UTC. Sending it raw would silently shift the
+// window by the offset, so the browser's own offset is appended here.
+function withOffset(v) {
+  if (!v) { return null; }
+  var d = new Date(v);
+  if (isNaN(d)) { return null; }
+  var off = -d.getTimezoneOffset();
+  var sign = off < 0 ? "-" : "+";
+  var a = Math.abs(off);
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+  return v + (v.length === 16 ? ":00" : "") +
+         sign + pad(Math.floor(a / 60)) + ":" + pad(a % 60);
+}
+
+function query() {
+  var p = [];
+  // Every channel ticked is the same request as none ticked, so send nothing
+  // and keep the URL short enough to read.
+  if (picked.size && picked.size < chans.length) {
+    p.push("channel=" + encodeURIComponent(Array.from(picked).join(",")));
+  }
+  if (mode === "age") {
+    var h = parseFloat(el("hours").value);
+    if (h > 0) { p.push("hours=" + h); }
+  } else if (mode === "range") {
+    var f = withOffset(el("from").value), t = withOffset(el("to").value);
+    if (f) { p.push("from=" + encodeURIComponent(f)); }
+    if (t) { p.push("to=" + encodeURIComponent(t)); }
+  }
+  var lim = parseInt(el("limit").value, 10);
+  if (lim > 0 && lim !== 5000) { p.push("limit=" + lim); }
+  if (el("order").dataset.v === "asc") { p.push("order=asc"); }
+  if (el("audio").checked) { p.push("audio=1"); }
+  if (el("positions").checked) { p.push("positions=1"); }
+  if (el("text").checked) { p.push("text=1"); }
+  var mq = parseFloat(el("minq").value);
+  if (mq >= 0) { p.push("min_quality=" + mq); }
+  var md = parseFloat(el("mind").value);
+  if (md >= 0) { p.push("min_duration=" + md); }
+  return p;
+}
+
+function update() {
+  var p = query();
+  var qs = p.length ? "?" + p.join("&") : "";
+  el("url").textContent = location.origin + "/api/export" + qs;
+  el("view").href = "/api/export" + qs + (p.length ? "&" : "?") + "pretty=1";
+  el("dl").onclick = function () {
+    location.href = "/api/export" + qs + (p.length ? "&" : "?") + "download=1";
+  };
+  // Count on a debounce: typing in the hours box should not fire a query per
+  // keystroke at a receiver that is already busy demodulating six channels.
+  if (countTimer) { clearTimeout(countTimer); }
+  el("count").textContent = "counting…";
+  el("count").className = "count";
+  countTimer = setTimeout(function () { count(p); }, 350);
+}
+
+function count(p) {
+  var mine = ++seq;
+  var q = p.filter(function (x) { return x.indexOf("limit=") !== 0 &&
+                                         x.indexOf("positions=") !== 0; });
+  q.push("limit=1");
+  fetch("/api/export?" + q.join("&"))
+    .then(function (r) { return r.json().then(function (j) {
+      return { ok: r.ok, body: j }; }); })
+    .then(function (res) {
+      if (mine !== seq) { return; }        // a newer request has overtaken
+      var c = el("count");
+      if (!res.ok) {
+        c.className = "count bad";
+        c.textContent = res.body.error || "the server refused that";
+        el("dl").disabled = true;
+        return;
+      }
+      el("dl").disabled = false;
+      var total = res.body.total || 0;
+      var lim = parseInt(el("limit").value, 10) || 5000;
+      c.innerHTML = "<b>" + total.toLocaleString() + "</b> message" +
+        (total === 1 ? "" : "s") + " match";
+      if (total > lim) {
+        c.className = "count warn";
+        c.innerHTML += " &mdash; the row cap will trim this to " +
+          lim.toLocaleString() + ". Raise it, or narrow the filters.";
+      } else {
+        c.className = "count";
+      }
+    })
+    .catch(function () {
+      if (mine !== seq) { return; }
+      el("count").className = "count bad";
+      el("count").textContent = "could not reach the server";
+    });
+}
+
+el("copy").addEventListener("click", function () {
+  var t = el("url").textContent;
+  var done = function () {
+    var b = el("copy"); b.textContent = "copied";
+    setTimeout(function () { b.textContent = "Copy URL"; }, 1200);
+  };
+  if (navigator.clipboard) { navigator.clipboard.writeText(t).then(done, done); }
+  else {
+    // http:// on a LAN address is not a secure context, so the clipboard API
+    // is often missing here. Select the text instead and let the user copy.
+    var r = document.createRange(); r.selectNodeContents(el("url"));
+    var s = getSelection(); s.removeAllRanges(); s.addRange(r); done();
+  }
+});
+
+update();
+</script>
+</main>
+</body>
+</html>

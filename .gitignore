@@ -20,3 +20,46 @@ __pycache__/
 *.py[cod]
 venv*/
 .venv/
+
+# --- secrets ---------------------------------------------------------------
+# API keys live in loose files beside webui.py and are read at run time. None
+# of them belong here, under any spelling.
+*API_Key*.txt
+*API_KEY*.txt
+*api_key*.txt
+*_KEY.txt
+*.lic
+
+# --- the live configuration ------------------------------------------------
+# watchkeeper.toml carries the vessel name, the home position and the address
+# of the boat's Signal K server. The tuning in it is worth publishing; those
+# values are not. Commit watchkeeper.example.toml instead.
+watchkeeper.toml
+
+# --- recorded traffic and anything derived from it -------------------------
+# The database holds every transcript. The briefs hold transcripts AND the
+# position the vessel was at when each was written, which is a movement
+# history: the most sensitive thing this system produces.
+watchkeeper/
+briefs/
+audio/
+*.db
+*.db-wal
+*.db-shm
+*.wav
+*.kml
+
+# --- survey and benchmark output -------------------------------------------
+boat_scan.csv
+bench_*/
+*-venv/
+venv_*/
+wk-venv/
+run.log
+
+# --- patch backups and scratch ---------------------------------------------
+*.pre-*
+*.bak
+__pycache__/
+*.pyc
+.xsession-errors*

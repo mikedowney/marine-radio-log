@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%237FB2C4' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M16 29V12'/%3E%3Cpath d='M10.5 6.5a9 9 0 0 0 0 11'/%3E%3Cpath d='M21.5 6.5a9 9 0 0 1 0 11'/%3E%3Cpath d='M6.5 3a14 14 0 0 0 0 18'/%3E%3Cpath d='M25.5 3a14 14 0 0 1 0 18'/%3E%3C/g%3E%3Ccircle cx='16' cy='9' r='3' fill='%237FB2C4'/%3E%3C/svg%3E">
 <title>Radio Log — operator and maintenance guide</title>
 <style>
   :root {
@@ -200,20 +201,56 @@ service.</p>
 
 <table>
   <tr><th>Part</th><th>Detail</th><th>Notes</th></tr>
-  <tr><td>Computer</td><td>Raspberry Pi 5, 16&nbsp;GB</td>
-      <td>Debian 13 (trixie). Memory is not a constraint; heat is.</td></tr>
+  <tr><td>Computer</td><td>Raspberry Pi 5, 8&nbsp;GB</td>
+      <td>Debian 13 (trixie). Memory is not a constraint; heat was, until
+          4&nbsp;Oct. Replaced a 16&nbsp;GB board &mdash; the extra memory was
+          never the limit.</td></tr>
   <tr><td>Receiver</td><td>RTL-SDR Blog V4</td>
       <td>Rafael Micro R828D tuner, 1&nbsp;PPM TCXO. USB.</td></tr>
-  <tr><td>Cooling</td><td>Active cooler + metal case</td>
-      <td>Essential. See <a href="#trouble">troubleshooting</a>.</td></tr>
+  <tr><td>Cooling</td><td>Aluminium dual-fan case, custom curve</td>
+      <td>Chosen from a five-way comparison. Roughly halved the rise above
+          ambient &mdash; see below. Essential; see
+          <a href="#trouble">troubleshooting</a>.</td></tr>
   <tr><td>Storage</td><td>microSD</td>
       <td>Recordings live in RAM to spare it — see <a href="#files">files</a>.</td></tr>
   <tr><td>Antenna</td><td>Marine VHF</td>
       <td>The single biggest influence on transcription quality.</td></tr>
-  <tr><td>AI HAT+ 2</td><td>Hailo-10H NPU, optional</td>
-      <td>Not used. Benchmarked and rejected for speech — see
-          <a href="#limits">known limits</a>.</td></tr>
+  <tr><td>AI HAT+ 2</td><td>Hailo-10H NPU &mdash; evaluated, then removed</td>
+      <td>Benchmarked and rejected for speech, then taken out: it blocks the
+          cooler's airflow. See <a href="#limits">known limits</a>.</td></tr>
 </table>
+
+<h3 id="coolerswap">What the cooler was worth, measured</h3>
+
+<p>Both figures below are the same workload and the same preset, running at
+the slip. The cabin was <em>hotter</em> on the second day.</p>
+
+<table>
+  <tr><th></th><th>Cabin</th><th>SoC mean</th><th>SoC peak</th>
+      <th>Rise above ambient</th></tr>
+  <tr><td>Pi&nbsp;5 active cooler, fan pinned, 3&nbsp;Oct</td>
+      <td>32.9&nbsp;&deg;C</td><td>84.1&nbsp;&deg;C</td><td>87.0&nbsp;&deg;C</td>
+      <td><b>51.2&nbsp;&deg;C</b></td></tr>
+  <tr><td>Dual-fan case, 4&nbsp;Oct</td>
+      <td>34.3&nbsp;&deg;C</td><td>58.6&nbsp;&deg;C</td><td>70.5&nbsp;&deg;C</td>
+      <td><b>24.3&nbsp;&deg;C</b></td></tr>
+</table>
+
+<p>The rise above ambient more than halved, which at roughly 10&nbsp;W works
+out near 2.4&nbsp;&deg;C/W against the old 5. Six hours, 128 messages, zero
+seconds held for heat, and the thermal governor never fired once &mdash;
+against 122 holds a day before the HAT came out.</p>
+
+<div class="warn-box">
+  <b>Read the rise, not the absolute temperature</b>
+  <p>The cabin swings twelve degrees between a cool morning and a hot
+  afternoon, so 80&nbsp;&deg;C means something completely different at each
+  end. On 3 October the governor was retuned three times against a moving
+  ambient and made things worse every time, because
+  <code>thermal_resume_below</code> had quietly become unreachable and nobody
+  noticed. The ambient trace on the thermal report exists to stop that
+  happening again.</p>
+</div>
 
 <h3>Why the antenna matters more than anything in software</h3>
 
@@ -332,16 +369,173 @@ matters:</p>
 <ol>
   <li>Trim the tail silence.</li>
   <li>Apply a 40&nbsp;ms raised-cosine fade at each end.</li>
-  <li>Normalise to a target RMS of 0.1 (about &minus;20&nbsp;dBFS), capped at
-      20&nbsp;dB of gain.</li>
+  <li>Normalise to a target RMS of <code>target_rms</code> &mdash; 0.2, about
+      &minus;14&nbsp;dBFS &mdash; capped at <code>max_norm_gain_db</code>,
+      26&nbsp;dB.</li>
   <li>Apply a look-ahead limiter, <em>after</em> normalisation, with a ceiling
       relative to the target level.</li>
 </ol>
+
+<p>Both figures are set in the configuration file, at <code>[radio]</code> for
+a global default or inside a preset to override it for one band. They were
+0.1 and 20&nbsp;dB until 26&nbsp;September, when they were raised 6&nbsp;dB
+together because Coast Guard broadcasts on Ch22A arrive quiet.</p>
+
+<p><strong>Move the two together.</strong> Raising <code>target_rms</code> on
+its own makes quiet transmissions relatively <em>worse</em>. A quiet clip is
+by definition the one already pinned at <code>max_norm_gain_db</code>, so
+lifting the target moves it further out of that clip's reach while every clip
+that was already reaching the target simply gets louder. The spread widens,
+which is the opposite of what raising the level was meant to achieve.</p>
+
+<p>The limiter ceiling needs no adjustment: it is
+<code>limiter_crest &times; target_rms</code>, clamped at 0.9, so it tracks
+the target automatically and cannot reach full scale.</p>
 
 <p>Putting the limiter before normalisation is a mistake that looks harmless and
 is not: the gain applied afterwards puts the peaks straight back. The key-up
 transient measured +12.9&nbsp;dB and clipped. With the limiter in the right
 place it is +5.3&nbsp;dB with no full-scale samples, and inaudible.</p>
+
+<h3 id="intermod">4.6.1 Why the tuner gain is so low</h3>
+
+<p>The gain has come down in stages &mdash; 36.4 for the original cabin dipole,
+then 25, then 19.7, then 16. Each drop costs sensitivity, so it is worth
+recording what forced them. The working value is now <strong>22</strong>,
+found by raising the gain until channel bleedover appeared and backing off:
+the comb below is visible on a spectrum display long before it is audible in
+a transcript, so the failure has a margin you can watch for.</p>
+
+<p>Watching the live spectrum in GQRX on 26&nbsp;September settled a question
+that months of readability statistics had only circled. When Ch14
+(156.700&nbsp;MHz, the LA/LB vessel traffic service) keys up, the entire
+2&nbsp;MHz window lifts at once, and a comb of false carriers appears on a
+200&nbsp;kHz spacing &mdash; 156.10, 156.30, 156.50, 156.70 and so on to the
+top of the band. Each tooth carries real, audible voice.</p>
+
+<p>A signal audible on two frequencies simultaneously is not coming from two
+transmitters. These are third-order intermodulation products, and three
+measurements place them in the tuner's own LNA and mixer rather than anywhere
+in this program:</p>
+
+<ul>
+  <li>The channelizer measures 67&nbsp;dB of rejection at 200&nbsp;kHz offset
+      (<code>test_fm_wide_spacing_rejection</code>), so it is not filter
+      leakage.</li>
+  <li>Peaks sit 45&nbsp;dB below full scale, so it is not ADC clipping.</li>
+  <li>The comb appears and disappears with tuner gain, and the products behave
+      as third-order: 3&nbsp;dB of change for every 1&nbsp;dB of input.</li>
+</ul>
+
+<p>That 3:1 law also explains why the problem arrived with the masthead
+antenna. The new antenna is roughly 20&nbsp;dB better than the cabin dipole.
+The wanted signals gained 20&nbsp;dB &mdash; which is real and audible &mdash;
+but the intermodulation gained 60, taking it from below the noise floor to
+well above it. The dipole was not more linear; it was simply too deaf to drive
+the front end anywhere near compression.</p>
+
+<p><strong>What does not help.</strong> Moving the centre frequency changes
+only the IF filter and the ADC window, both downstream of where the products
+are made. No filter can reject 156.700 while passing 156.800 &mdash; 100&nbsp;kHz
+of skirt at VHF needs a loaded Q in the tens of thousands. Narrowing the tuner
+IF bandwidth cuts what reaches the ADC but sits after the mixer, so it does
+nothing for an in-band aggressor.</p>
+
+<p><strong>What would.</strong> A bandpass filter feeding a high-IIP3 preamp
+ahead of a dongle run at low gain, which fixes both ends of the squeeze: the
+preamp sets the noise figure, and the dongle's poor gain stages never handle
+the large signals. Or a receiver with better front-end linearity. Or, for the
+one or two channels that matter most, a conventional superhet &mdash; a marine
+set applies its selectivity at a fixed 455&nbsp;kHz IF, where 70&nbsp;dB of
+adjacent-channel rejection is a cheap ceramic filter rather than an
+impossibility.</p>
+
+<h3 id="gate">4.6.2 The pre-transcription gate</h3>
+
+<p>The encoder always processes one padded 30-second window, so a one-second
+clip costs nearly as much to decode as a twenty-five-second one. On a Pi 5
+under a HAT that is CPU and heat spent on nothing, and skipping the hopeless
+clips is worth doing.</p>
+
+<p>Two gates, both off at 0, both checked before the job is ever queued:</p>
+
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>min_transcribe_quality</code></td>
+      <td>Readability below which the decode is skipped. 55 on the boat.</td></tr>
+  <tr><td><code>min_transcribe_s</code></td>
+      <td>Clips shorter than this are mic pops. 2.0 s on the boat.</td></tr>
+  <tr><td><code>always_transcribe</code></td>
+      <td>Channel names exempt from both. <code>["Ch16 Distress", "Ch22A USCG Info"]</code>
+      on the boat.</td></tr>
+  <tr><td><code>keep_above_quality</code></td>
+      <td>Readability at or above which a transcript is never discarded outright,
+      only trimmed. 60 on the boat. Must exceed <code>min_transcribe_quality</code>.</td></tr>
+  <tr><td><code>transcribe_channels</code></td>
+      <td>Whitelist of channels the decoder may touch at all; empty means every
+      voice channel, which is the default. Everything excluded is still
+      received, recorded and playable, and shows as "not transcribed". Added
+      4&nbsp;Oct as a blunt instrument for heat, then measured and found not to
+      be worth using &mdash; see the warning below.</td></tr>
+</table>
+
+<div class="warn-box">
+  <b>The gate is dead code when every voice channel is exempt</b>
+  <p>With only Ch16 and Ch22A configured and both listed in
+  <code>always_transcribe</code>, <code>min_transcribe_quality</code> applies
+  to nothing and every message reaches the decoder whatever it scores. That
+  was the state on 3&nbsp;Oct, and it is why the per-channel cost query showed
+  0% gated on those two channels while Ch09 and Ch12 were being filtered at
+  35% and 63%.</p>
+  <p>It also explains a 19.7-second data burst that scored 95% readability and
+  consumed 26 seconds of decode: nothing was ever going to stop it. The gate
+  comes back to life the moment a non-exempt channel is added.</p>
+</div>
+
+<p><strong>The audio is always kept.</strong> Only the decode is skipped. The
+row stays in the log with <code>status = 'gated'</code>, displayed as "not
+transcribed" with the reason, the WAV is still served, and the clip can be
+played back or re-transcribed later. Nothing disappears.</p>
+
+<p>The thresholds came from listening, not from statistics, and the distinction
+matters. A query over one day's log suggested a quality gate was
+unaffordable &mdash; gating at 60 would have discarded 5 of 21 "successful"
+transcripts. But replaying those clips showed that anything scoring below
+roughly 50&ndash;60 is unintelligible, which means the text Whisper produced
+for them was invention. Discarding it is the purpose of the gate, not its
+cost. Any metric that counts hallucinations as successes will argue against
+its own filter.</p>
+
+<p>Validated by listening over a full 100-message log the same evening: every
+clip the gate rejected was static, including those scoring only 5&ndash;10
+points below the cut, and everything at or above it was intelligible with a
+reasonable transcript. 55 is the right number for this site and this antenna.
+It is not a universal constant &mdash; it depends on where the noise floor of
+the readability metric sits, which varies with the band and the front end, so
+re-derive it by listening after any change to either.</p>
+
+<p>Ch16 and Ch22A are exempt via <code>always_transcribe</code> and always get
+a decode attempt whatever they score. The names must match a configured
+channel exactly; a typo would fail silently and in the worst direction, so the
+receiver logs a warning at startup for any name it does not recognise.</p>
+
+<p>Two traps are worth recording:</p>
+
+<ul>
+  <li><strong><code>quality</code> is <code>None</code>, not 0, when the metric
+      has no opinion.</strong> A steady carrier has constant frame energy, so
+      the loud-frame filter inside <code>spectral_flatness</code> keeps nothing
+      and the function returns <code>None</code>. A naive
+      <code>if quality &lt; threshold</code> raises; a naive
+      <code>if not quality</code> silently drops every continuous
+      transmission. <code>None</code> always passes the gate.</li>
+  <li><strong>The readability scale is compressed here.</strong> Nothing in
+      the marine log scores below about 40, because FM discriminator noise is
+      less spectrally flat than the white noise <code>FLATNESS_NOISE = 0.55</code>
+      was calibrated against. So 55 sits nearer the bottom of the real range
+      than the 0&ndash;100 scale suggests, and recalibrating that endpoint
+      against measured noise-only clips would spread the scale usefully.</li>
+</ul>
 
 <h3>4.7 Transcription</h3>
 
@@ -351,20 +545,174 @@ transcription degrades to "tap to listen" rather than a lost message.</p>
 
 <table>
   <tr><th>Setting</th><th>Value</th><th>Why</th></tr>
-  <tr><td>Model</td><td><code>small.en</code>, int8</td>
-      <td>Benchmarked against six alternatives. See <a href="#limits">limits</a>.</td></tr>
+  <tr><td>Model</td><td><code>medium.en</code>, int8</td>
+      <td>Benchmarked against fifteen alternatives on 3&nbsp;Oct and adopted on
+          4&nbsp;Oct once the new cooler made it affordable. See
+          <a href="#modelbench">4.7.2</a>.</td></tr>
   <tr><td>Threads</td><td>2</td><td>Traffic is sparse; peak power is heat.</td></tr>
   <tr><td>Beam size</td><td>1</td><td>Greedy. Roughly half the work of 2.</td></tr>
   <tr><td>Queue</td><td>Newest first, depth 12</td>
       <td>When behind, the top of the log stays current.</td></tr>
-  <tr><td>Token cap</td><td>8 per second of audio</td>
-      <td>Speech runs 4&ndash;5. Bounds a runaway loop.</td></tr>
+  <tr><td>Token cap</td><td>5 per second of audio</td>
+      <td>Speech runs 4&ndash;5. Bounds a runaway loop. Maximum 14 &mdash; see
+          <a href="#tokencap">4.7.1</a>.</td></tr>
 </table>
 
 <p>The token cap deserves a note. Without it, a decoder that starts repeating
 runs to the model's 448-token ceiling, and a four-second clip was measured
 taking three minutes. Capping output to what the clip could plausibly contain
 bounds the worst case regardless of what the decoder does.</p>
+
+<h3 id="tokencap">4.7.1 The token cap is sized to the window, not the clip</h3>
+
+<p>This is subtle enough to have shipped as a bug, so it is worth stating
+plainly: <code>max_new_tokens</code> is applied by faster-whisper
+<strong>per encoder window</strong>, not per clip. The encoder works in padded
+30-second windows and slides that window along anything longer, so a 90-second
+bulletin is three windows of 30, not one pass of 90.</p>
+
+<p>The cap was originally computed from clip length:</p>
+
+<pre>cap = int(len(audio) / sr * MAX_TOKENS_PER_SECOND) + 16</pre>
+
+<p>That was harmless while <code>max_message_s</code> was 30, because 30 &times; 8 + 16
+= 256, comfortably under the model's 448-token context. When
+<code>max_message_s</code> on the boat preset was raised to 90 to catch the long
+Coast Guard bulletins, the same expression asked for 736 tokens. faster-whisper
+validates that figure against <code>max_length = 448</code> and
+<strong>raises <code>ValueError</code> rather than clamping</strong>, so the
+decode threw before producing anything.</p>
+
+<p>The failure was invisible in the obvious place. Short traffic kept working
+perfectly, so the log looked healthy; only messages over about 54 seconds
+failed, and they failed as <code>transcription failed</code> rather than
+<code>no speech found</code>. On 3 October a nine-minute Ch22A broadcast landed
+as six consecutive 90-second rows, every one of them an error, at readability
+92&ndash;100%.</p>
+
+<table>
+  <tr><th>Clip length</th><th>Requested tokens</th><th>Result</th></tr>
+  <tr><td>30 s</td><td>256</td><td>fine</td></tr>
+  <tr><td>53 s</td><td>440</td><td>fine</td></tr>
+  <tr><td>54 s</td><td>448</td><td><code>ValueError</code></td></tr>
+  <tr><td>90 s</td><td>736</td><td><code>ValueError</code></td></tr>
+</table>
+
+<p>The fix clamps the cap to one window:</p>
+
+<pre>WHISPER_WINDOW_S = 30.0
+cap = int(min(len(audio) / sr, WHISPER_WINDOW_S) * MAX_TOKENS_PER_SECOND) + 16</pre>
+
+<p>This corrects a second, quieter defect at the same time. Before the clamp, a
+90-second clip authorised 736 tokens inside a single 30-second window &mdash; 24
+tokens per second of audio, three times the intended limit. The guard against
+runaway loops had stopped guarding on exactly the long clips where a loop is
+most expensive. After the clamp it is a flat 256 tokens per window, which is the
+8 tokens/second the setting advertises.</p>
+
+<p><strong>Consequence for configuration:</strong> <code>max_tokens_per_second</code>
+now has a hard ceiling of <strong>14</strong>. The cap is
+<code>30 &times; max_tokens_per_second + 16</code>, so 14 gives 436 and 15 gives
+466. Above 14 every message fails, not just the long ones. There is no startup
+check for this yet.</p>
+
+<p>Rows that failed this way keep their audio but are not re-queued; there is no
+retry path for an errored row. Recovering them means pulling the WAVs aside
+before they age out of the ring and decoding them by hand.</p>
+
+<h3 id="modelbench">4.7.2 What the model benchmark actually showed</h3>
+
+<p>Sixteen faster-whisper models were run over two hand-transcribed clips on
+3&nbsp;October: a strong 48-second Ch22A bulletin and a weak 36-second Ch16
+safety call. Both transcripts were written out by ear first, so this is error
+rate against ground truth rather than models compared with each other.</p>
+
+<table>
+  <tr><th></th><th colspan="3">clip 1 &mdash; 48&nbsp;s, strong</th>
+      <th colspan="3">clip 2 &mdash; 36&nbsp;s, weak</th></tr>
+  <tr><th>model</th><th>WER%</th><th>rtf</th><th>position</th>
+                    <th>WER%</th><th>rtf</th><th>position</th></tr>
+  <tr><td>large-v2</td><td>7.6</td><td>3.18</td><td>exact</td>
+      <td>25.4</td><td>3.33</td><td>exact</td></tr>
+  <tr><td>large-v1</td><td>9.5</td><td>3.19</td><td>exact</td>
+      <td>49.3</td><td>3.19</td><td>exact</td></tr>
+  <tr><td>large-v3</td><td>17.1</td><td>3.29</td><td>exact</td>
+      <td>59.2</td><td>3.62</td><td>digits only</td></tr>
+  <tr><td>medium</td><td>16.2</td><td>1.70</td><td>exact</td>
+      <td>74.6</td><td>2.18</td><td>digits only</td></tr>
+  <tr><td><b>medium.en</b></td><td>31.4</td><td>1.24</td><td>exact</td>
+      <td><b>40.8</b></td><td>1.49</td><td>no decimal point</td></tr>
+  <tr><td>small.en</td><td>32.4</td><td>0.48</td><td>exact</td>
+      <td>62.0</td><td>0.58</td><td>digits only</td></tr>
+  <tr><td>turbo</td><td>13.3</td><td>1.50</td><td>exact</td>
+      <td>42.3</td><td>1.90</td><td><b>GARBLED</b></td></tr>
+  <tr><td>small</td><td>28.6</td><td>0.54</td><td>exact</td>
+      <td>77.5</td><td>0.68</td><td><b>WRONG</b></td></tr>
+  <tr><td>distil-large-v3</td><td>18.1</td><td>1.39</td><td><b>WRONG</b></td>
+      <td>49.3</td><td>1.78</td><td><b>WRONG</b></td></tr>
+  <tr><td>distil-large-v2</td><td>29.5</td><td>1.42</td><td><b>WRONG</b></td>
+      <td>52.1</td><td>1.89</td><td><b>WRONG</b></td></tr>
+  <tr><td>distil-medium.en</td><td>38.1</td><td>0.61</td><td><b>WRONG</b></td>
+      <td>59.2</td><td>0.74</td><td><b>WRONG</b></td></tr>
+  <tr><td>distil-small.en</td><td>46.7</td><td>0.40</td><td><b>WRONG</b></td>
+      <td>102.8</td><td>0.41</td><td><b>WRONG</b></td></tr>
+  <tr><td>base.en</td><td>59.0</td><td>0.17</td><td><b>WRONG</b></td>
+      <td>78.9</td><td>0.13</td><td><b>MISSING</b></td></tr>
+  <tr><td>base</td><td>50.5</td><td>0.19</td><td><b>WRONG</b></td>
+      <td>119.7</td><td>0.27</td><td><b>WRONG</b></td></tr>
+  <tr><td>tiny.en</td><td>80.0</td><td>0.10</td><td>exact</td>
+      <td>131.0</td><td>0.12</td><td><b>WRONG</b></td></tr>
+  <tr><td>tiny</td><td>101.0</td><td>0.16</td><td>exact</td>
+      <td>146.5</td><td>0.15</td><td><b>WRONG</b></td></tr>
+</table>
+
+<p><em>rtf measured on four idle threads. Production runs two alongside the
+channelizer, so these are a floor, not a prediction.</em></p>
+
+<p><strong>Word error rate ranks these almost backwards from how useful they
+are.</strong> The position column &mdash; whether the latitude and longitude
+came through correctly &mdash; is the one that matters on a watchkeeper, and
+it disagrees with WER repeatedly. On the weak clip <code>turbo</code> beat
+<code>small.en</code> on WER and garbled the latitude; <code>small</code> beat
+nothing and got it wrong where <code>small.en</code> got it right.</p>
+
+<div class="warn-box">
+  <b>Every distilled model failed the position. Eight out of eight.</b>
+  <p><code>distil-large-v3</code> has the second-best WER of anything
+  practical and produced <code>3-13-13-129</code> for <code>33-13.279</code>.
+  <code>distil-large-v2</code> gave <code>118-17.75</code> for
+  <code>118-17.65</code> &mdash; one digit, about half a nautical mile.</p>
+  <p>Distillation removes decoder layers, and digit sequences are exactly what
+  needs careful decoding. Their attractive real-time factors are a trap: do
+  not use them here.</p>
+</div>
+
+<p><strong>Numbers survive better than words at every size.</strong> Ten of
+sixteen models got the strong clip's position exactly right, including
+<code>tiny.en</code>, whose surrounding prose is 80% wrong. It spelled the
+position out digit by digit and every digit was correct. Whisper decodes
+numbers far more reliably than it decodes language.</p>
+
+<p><strong>The dangerous errors are confident geographic inventions.</strong>
+On clip 1 <code>small.en</code> rendered "sector San Diego" as
+<b>North Carolina</b>, three times. On clip 2 it turned "southeast side of
+Catalina Island" into <b>North Catalina Highway</b>. <code>medium.en</code>
+got both right. That is the argument for the larger model, and it is not
+visible in WER at all &mdash; the two are within one point on clip 1.</p>
+
+<p><strong>Whisper mangles the procedure words.</strong> No model in the set
+produced <em>S&eacute;curit&eacute;</em> or <em>PAN PAN</em> correctly.
+Observed spellings include Securete, Securety, Secure&nbsp;Day, Kerate,
+Carat&nbsp;A, Carrot&nbsp;8, Caratay and "Here it takes"; PAN PAN came out as
+Pawn, POM&nbsp;POM and Pompom. Two of the three words that classify a
+transmission's urgency are therefore unreliable, which is the single largest
+remaining accuracy problem and is not solved by a bigger model. A fixed
+substitution table was considered and rejected: on weak signals the variants
+are too wild for one to catch.</p>
+
+<p>The scoring tool is <code>score_models.py</code>, and the two clips plus
+their hand transcripts are worth keeping as a regression set &mdash; they turn
+"did that change break transcription" into a thirty-second check.</p>
 
 <h3>4.8 Hallucination filters</h3>
 
@@ -394,14 +742,57 @@ away the whole transcript loses them. Every filter removes what it recognises
 and keeps the rest, marking the result unclear. The transcript is only
 discarded when nothing survives.</p>
 
+<div class="warn-box">
+  <b>How that rule was broken, and fixed on 3 October</b>
+  <p><code>strip_subtitle_corpus()</code> split the transcript on sentence
+  punctuation and dropped any sentence containing boilerplate. Whisper
+  routinely omits the full stop before its outro, so the real speech and the
+  outro landed in <em>one</em> sentence and went out together &mdash; while a
+  trailing token loop, which had its own fragment, survived. A Ch16 safety
+  call decoded as:</p>
+  <pre>vessel sanctuary, vessel sanctuary, United States Coast Guard,
+safety, going channel 16, over Thank you for watching! you you you you</pre>
+  <p>and was logged as <code>you you you you</code>. The filter kept the
+  hallucination and discarded the transmission &mdash; the exact inversion of
+  the rule above.</p>
+  <p>Two defects compounded: the sentence splitter needed punctuation that was
+  not there, and the filter chain is <code>elif</code>, so once the subtitle
+  branch ran neither the blocklist nor the loop detector ever saw the result.
+  The fix cuts a matching part <em>at</em> the boilerplate, keeps the head, and
+  re-runs the loop trimmer on what is left.</p>
+  <p>Worth noting how it was caught: the message export prints
+  <code>Decoder said:</code> alongside the filtered transcript. Without that
+  line this reads as a bad decode rather than a filter bug. It also went
+  unnoticed for an unknown period &mdash; any transmission where Whisper ran
+  the outro on without punctuation was being mangled silently, and
+  <code>Roger standing by thanks for watching</code> was simply vanishing.</p>
+</div>
+
 <p><strong>A readable recording is never discarded.</strong> The repetition
 filters work on text, and text alone cannot distinguish a Coast Guard station
 identifying itself three times &mdash; which is correct radio procedure &mdash;
 from a decoder stuck on a phrase. The audio can. If the readability score is
-65% or above, the transcript is trimmed where possible and kept regardless,
-marked unclear. Measured across clips with known outcomes, everything
-containing real speech scored 72&ndash;95% and everything invented scored
-47&ndash;52%, so the threshold has clear air on both sides.</p>
+at or above <code>keep_above_quality</code>, the transcript is trimmed where
+possible and kept regardless, marked unclear.</p>
+
+<p>That threshold was 65, from aviation clips where real speech scored
+72&ndash;95% and invented text 47&ndash;52%. It is <strong>60</strong> as of
+27 September. On marine FM the whole readability scale is compressed &mdash;
+nothing scores below about 40 &mdash; so 65 sat far higher in the real
+distribution than it had on airband. A naval s&eacute;curit&eacute; broadcast
+scored 64, decoded correctly, and was discarded by one point: the speaker had
+repeated the announcement three times as the procedure requires, and the
+guard that exists precisely for that case did not fire. The trimmer could not
+rescue it either, because the repeats drifted in wording &mdash; "aircraft
+carrier" then "aircraft carriers" &mdash; so exact-match trimming found
+nothing to cut.</p>
+
+<p><code>keep_above_quality</code> must stay <em>above</em>
+<code>min_transcribe_quality</code> (see <a href="#gate">4.6.2</a>). Below it
+the guard is dead code, because nothing failing that gate ever reaches the
+decoder to be guarded. The receiver logs a warning at startup if the two are
+inverted, since nothing at runtime would reveal it &mdash; transmissions would
+simply start disappearing for repetition that was real.</p>
 
 <p><strong>Standard calls are exempt, up to a point.</strong> Urgent traffic is
 formatted as exactly the repetition these filters look for — "mayday mayday
@@ -409,6 +800,27 @@ mayday", "securite securite securite", "all stations, all stations, all
 stations". Suppressing those would be the worst failure this program could
 have. They are exempt, but only up to three repeats, because a real call is
 said three times and a decoder stuck on a word says it eleven.</p>
+
+<h4>Repetition loops and the salvage pass</h4>
+
+<p>A decoder can fall into a loop and emit the same token over and over &mdash;
+<code>ATCG ATCG ATCG ATCG</code> across a thirty-second recording of perfectly
+good speech. Whisper's normal escape is the temperature ladder: a looping
+transcript always fails the compression-ratio check, which triggers a re-decode
+at the next temperature, and the randomness usually breaks the loop.</p>
+
+<p>Presets that set <code>temperatures = [0.0]</code> to cap decode time have no
+ladder, so a loop is terminal and the transmission is lost. Rather than restore
+the full ladder &mdash; which re-decodes every marginal clip and was the source
+of the rtf&nbsp;6 and rtf&nbsp;9 outliers &mdash; a clip whose first pass is
+detected as a loop gets one salvage pass with
+<code>loop_retry_temperatures</code>, beam search and a tighter n-gram block.
+The result is accepted only if it is not itself a loop and carries more than a
+single word; otherwise the message is discarded as before.</p>
+
+<p>The cost falls only on clips that would have been thrown away whole. A clean
+first pass still costs exactly one decode. Set
+<code>loop_retry_temperatures = []</code> to turn it off.</p>
 
 <h3>4.9 Why there is no decoder prompt</h3>
 
@@ -478,25 +890,269 @@ discarded outright &mdash; see &sect;4.8.</p>
   noisy talker.</p>
 </div>
 
-<h3>4.12 Retention</h3>
+<h3>4.12 Positions</h3>
 
-<p>The database keeps the most recent 100 messages. When it prunes, it does not
-simply delete the oldest — it evicts by value first:</p>
+<p>The Coast Guard reads out positions constantly, in degrees and decimal
+minutes &mdash; <em>"position 33-01.923 north, 117-22.636 west"</em>. Those are
+the most actionable thing in the log and the least readable, so any position
+found in a transcript gets a map pin beside the download button, and appears in
+the exported text file with a link.</p>
 
-<ol>
-  <li>Empty and errored messages go first</li>
-  <li>Then low-confidence ones</li>
-  <li>Then recorded-but-never-transcribed</li>
-  <li>Good transcripts last, and among equals, oldest first</li>
-</ol>
+<p>The difficulty is that the decoder renders the same spoken position a dozen
+ways. All of these are real, from this receiver, and all mean the same
+point:</p>
 
-<p>So a burst of noise cannot push out the traffic you wanted to keep. Deleting
-a row deletes its WAV with it.</p>
+<pre><code>33-01.923 north, 117-22.636 west          digits, clean
+33 hyphen, 01 decimal, 9-2-3 north        fraction read out singly
+33 hyphen, 01 decimal, 9 or 23 north      "923" misheard as "9 or 23"
+33 hypin 42 decimal 686 north             "hyphen" misheard
+34-hyphen 01, decimal 750 north           dash and the spoken word both
+34-01-75 North                            decimal point heard as a hyphen
+Three-four, hyphen zero one, decimal
+  seven five zero north                   every digit as a word</code></pre>
 
-<h3>4.13 Thermal governor</h3>
+<p>All of them are normalised to the same string before matching. Two traps are
+worth knowing about, because both appear in ordinary traffic:</p>
 
-<p>Transcription is the hottest thing the program does, and a Pi&nbsp;5 with a
-HAT fitted will sit at its soft temperature limit indefinitely under load.</p>
+<ul>
+  <li><strong>"Point" is not a decimal point.</strong> "Point Conception" and
+      "the highest point of the vessel" are both common here. Only
+      <em>decimal</em> introduces a fraction.</li>
+  <li><strong>A lone number word is usually prose.</strong> "one meter above
+      water" is not a coordinate. Number words are read as digits only in a run
+      of two or more, or next to a separator a position would have.</li>
+</ul>
+
+<p>A position is only accepted with an explicit hemisphere, minutes below 60,
+latitude within 90 and longitude within 180. That combination rejects the
+frequency announcements that otherwise look identical &mdash; "channel 22 Alpha,
+1022, 157 decimal 1 megahertz" has the numbers but no hemisphere.</p>
+
+<h4>The distance filter</h4>
+
+<p><code>home_lat</code> and <code>home_lon</code> say where the receiver is,
+and anything further off than <code>coord_max_nm</code> (500 nautical miles by
+default) is ignored. This is not only tidiness: a badly garbled transcript can produce a
+syntactically valid position, and the distance check is what keeps it off the
+map. With no home position configured the feature is off entirely, because
+there is then no way to tell a real position from a plausible one.</p>
+
+<h4>Why the map link looks the way it does</h4>
+
+<p>Google's documented link format,
+<code>maps/search/?api=1&amp;query=&hellip;</code>, has no zoom parameter and
+always opens tight on the pin. For judging a position that is exactly the
+wrong behaviour. So when a home position is known the link uses the older
+<code>maps/place/&lt;target&gt;/@&lt;centre&gt;,&lt;zoom&gt;z</code> form
+instead, centred between the two points with a zoom worked out from the
+distance:</p>
+
+<pre><code>metres per pixel = 156543.03 &times; cos(latitude) / 2^zoom</code></pre>
+
+<p>Solved for the separation filling a little over half a 640-pixel map. Both
+of those are guesses at a typical screen, which is fine &mdash; the result only
+has to put both points on screen with some margin, and it does, from half a
+mile out to the 500&nbsp;nm limit.</p>
+
+<p>That URL form is long-standing but is not part of Google's documented API,
+so the exported text file carries both links: the framed one and the plain
+<code>api=1</code> pin, which will keep working whatever Google changes. On
+deck the phone's own blue dot marks where you are, so both positions end up on
+the map without the link having to carry a second marker.</p>
+
+<h4>Taking the position from the boat's GPS</h4>
+
+<p>A fixed figure in the config file is fine at anchor, but under way it is
+wrong exactly when it matters: a Point Conception advisory reads differently
+twelve miles off it than tied up in Long Beach. <code>home_source</code> takes
+a URL returning the vessel's position as JSON and polls it in the background.
+Signal K serves the right shape directly:</p>
+
+<pre><code>home_source = "http://&lt;cerbo&gt;:3000/signalk/v1/api/vessels/self/navigation/position"
+home_refresh_s = 300</code></pre>
+
+<p>Signal K offers a per-sensor breakdown alongside the reading; the top-level
+<code>value</code> is taken, because Signal K has already chosen between the
+sources. A plainer endpoint returning <code>{"lat": &hellip;, "lon": &hellip;}</code>
+works too.</p>
+
+<p>The poll runs on its own thread, so nothing serving the page ever waits on
+the boat's network &mdash; which on marina wifi is not a safe thing to do. A
+live fix always beats <code>home_lat</code>/<code>home_lon</code>, which remain
+the fallback until the first one arrives. After that the last good fix is kept
+rather than discarded: a receiver that has lost contact with its GPS has not
+moved, and a position a few hundred metres stale changes nothing about a
+500 nm radius. Unreachable sources and malformed replies are logged once and
+then only occasionally, so a boat with the instruments off does not fill the
+journal.</p>
+
+<p>The settings panel shows the position in use and where it came from, so a
+GPS feed that has quietly stopped is visible rather than leaving you wondering
+why pins stopped appearing. A live fix older than half an hour is flagged.</p>
+
+<p>The home position also resolves a lost hemisphere. "west" comes through as
+"Texas" often enough that it is worth handling, so a longitude with no
+hemisphere is placed in whichever one is nearer home &mdash; and still has to
+pass the distance check. Those are marked <em>hemisphere assumed</em> in the
+export and in the pin's tooltip.</p>
+
+<h3>4.13 Retention</h3>
+
+<p>The database keeps the most recent <code>max_messages</code> rows — 100 by
+default, 2000 on the boat since 4 October — and deletes the oldest by message id. Nothing else is considered:
+status, transcription outcome and quality score play no part. Deleting a row
+deletes its WAV with it. Pruning runs once a minute.</p>
+
+<div class="warn-box">
+  <b>Why it is not cleverer than that</b>
+  <p>It used to evict by value: empty and errored messages first, then
+  low-confidence ones, then the oldest good transcript. The reasoning was that a
+  burst of noise should not push out traffic worth keeping.</p>
+  <p>That was wrong, and the way it failed is worth recording. A message is
+  inserted as <code>pending</code>, which ranked alongside <code>ok</code> — the
+  top band — so it appeared in the log at once. When transcription finished and
+  the status became <code>low</code> or <code>empty</code>, its rank dropped
+  below <em>every</em> good row in the table however old, and the next prune
+  deleted it. Messages showed up in the log and vanished about a minute later,
+  including ones the operator had already played.</p>
+  <p>Any policy that ranks rows by a field written after insertion has this
+  defect. A log that cannot be trusted to still hold what it just displayed is
+  worse than one that occasionally spends a slot on noise, so age is now the
+  only key, and the id is the only clock that never disagrees with itself.</p>
+</div>
+
+<p>If noise is genuinely crowding out real traffic, the answer is a larger
+<code>max_messages</code> rather than a smarter eviction rule — bearing in mind
+that recordings live in RAM, so raising it means raising the tmpfs size too, at
+roughly 1&nbsp;MB per thirty-second message.</p>
+
+<div class="warn-box">
+  <b>Two numbers that have to move together</b>
+  <p><code>max_messages</code> sets what the database keeps.
+  <code>webui.py</code> has its own fetch limit, and the page shows only what
+  it asks for. Raise one without the other and the log silently displays a
+  fraction of what is retained, with nothing to indicate it.</p>
+  <p>At the measured 245&nbsp;KB per recording, 2000 messages is about
+  490&nbsp;MB &mdash; 64% of the 768&nbsp;MB tmpfs. Check with
+  <code>df -h ~/watchkeeper/audio</code> before raising it further.</p>
+</div>
+
+<p>Briefs follow the same shape with their own number.
+<code>keep_briefs</code> under <code>[ai]</code> caps how many are kept in
+<code>~/watchkeeper/briefs/</code>, and the oldest goes first &mdash; the rule
+every pruner in this system follows, so that the thing you lose is always the
+thing you were least likely to want. They are small enough that the cap is
+about tidiness rather than space.</p>
+
+<h3 id="history">4.14 History and the thermal series</h3>
+
+<p>Two tables sit alongside <code>messages</code> and are never pruned with
+it. Both exist because the live log is the wrong shape for analysis.</p>
+
+<p><code>messages</code> is capped at <code>max_messages</code> and every row
+whose WAV has gone is dropped at startup — which, with recordings on tmpfs,
+means the entire table after a reboot. That is correct for a log you play
+back and useless for comparing yesterday against today. Two days of gain
+experiments were lost to it before this existed.</p>
+
+<h4>history</h4>
+
+<p>One row per message, permanent, with no audio path: channel, time,
+duration, SNR, status, transcript, quality, tuner gain, <code>rtf</code>, SoC
+temperature and thermal wait. About half a kilobyte each.</p>
+
+<p><strong>Rows are written at INSERT and updated in place</strong> as the
+transcript and timings arrive, rather than copied when a message is deleted.
+That is deliberate: <code>refresh.sh</code> empties <code>messages</code> with
+raw SQL from outside the program, so anything hooked to <code>prune()</code>
+or <code>reconcile()</code> would miss precisely the data an experiment
+produces.</p>
+
+<p>The natural key is <code>(started_at, channel)</code>, not the message id.
+SQLite restarts <code>INTEGER PRIMARY KEY</code> from 1 once a table has been
+emptied, so ids from different sessions collide. Inserts use
+<code>INSERT OR IGNORE</code>, so replaying the same message is harmless.</p>
+
+<p>Every history write is best-effort and swallows its errors. The live log is
+the product; this is the notebook, and it must never cost a recording.</p>
+
+<h4>thermal</h4>
+
+<p>SoC temperature, fan RPM, load average and transcription queue depth, every
+<code>thermal_sample_s</code> seconds — 10 by default. Rows older than
+<code>thermal_history_days</code> (7) are dropped on the same once-a-minute
+schedule as message pruning. Roughly 8,600 rows a day and 3 MB a week.</p>
+
+<p>Sampling on a fixed interval rather than per message is the whole point. A
+per-message temperature only exists when traffic happens, so a quiet hot hour
+and a busy hot hour look identical and a quiet cool hour is invisible. Ten
+seconds because the chip moves faster than that: the governor polls every two
+seconds, a decode runs 10–30 s, and at a 30-second cadence a burst that drove
+the SoC from 65 to 80 and back could fall entirely between samples.</p>
+
+<h4>The report page</h4>
+
+<p><code>/report</code>, linked at the foot of the log. Temperature and
+message rate share one time axis, with presets for the last hour, 6 hours, 24
+hours, 3 days and a week, plus a custom range. Bucketing happens in SQL, so a
+week of samples is reduced before it crosses the wire; the view auto-refreshes
+except on a custom range, which stays where you put it.</p>
+
+<p>Reading the two series together is what the page is for. A cooler that
+looks worse may simply have had a busier hour, and the message-rate bars are
+what tell the two apart. The amber marks along the bottom are decodes held for
+heat.</p>
+
+<p>Hovering anywhere on the plot snaps a crosshair to the nearest bucket and
+shows its exact figures — temperature with its peak, message count, fan RPM,
+seconds held and queue depth. The cursor position is scaled from screen pixels
+back into viewBox units before the time axis is inverted, so it stays accurate
+at any window width, and it works by drag on a touchscreen.</p>
+
+<h3>4.15 Thermal governor</h3>
+
+<p>Transcription is the hottest thing the program does.</p>
+
+<p>Since the cooler change on 4 October the governor is a safety net rather
+than a regulator: 79/75/20 against a measured peak of 70.5&nbsp;&deg;C, and it
+has not fired once. That is the state it should be in.</p>
+
+<div class="warn-box">
+  <b>What 3 October taught, at some cost</b>
+  <p>The governor was retuned three times in one afternoon and every change
+  made things worse. All three failures share a cause worth stating plainly:
+  <strong>the settings were reasoned about instead of measured, against an
+  ambient that had moved twelve degrees.</strong></p>
+
+  <p><b>1. An unreachable resume target silently disables it.</b> With the
+  cabin at 33&nbsp;&deg;C the SoC could not get below about 77 even at idle,
+  so <code>thermal_resume_below = 75</code> was never reached. Every hold ran
+  the full timeout and then decoded anyway — all of the latency, none of
+  the cooling. The log said so on every line and nobody read it:</p>
+  <pre>held transcription 180s at 80.4 C
+held transcription 180s at 79.8 C
+held transcription 180s at 77.7 C</pre>
+
+  <p><b>2. A long max_wait collapses the queue.</b> Raising
+  <code>thermal_max_wait_s</code> to 180 cut throughput to about 16 messages
+  an hour against 34 arriving. The backlog filled to its cap of 12 and began
+  evicting. At 45 seconds it had been roughly 75 an hour and kept up
+  comfortably.</p>
+
+  <p><b>3. Disabling it entirely starts a runaway.</b> Reasoning that
+  throttled silicon does more work per watt than duty-cycled silicon —
+  which is true — the band was pushed to 88/85 so the hardware's own
+  throttle could regulate. The SoC pinned at 84–87&nbsp;&deg;C, the
+  channelizer starved, the squelch began opening on noise, and the message
+  rate went from about 12 an hour to <b>61</b>, nearly all of it empty. More
+  spurious messages meant more decode, which meant more heat. The throughput
+  argument was sound in isolation and wrong here, because it assumed the DSP
+  had headroom it did not have.</p>
+
+  <p>The lesson is the ordering: <em>fix the ambient first.</em> No governor
+  setting compensates for a cooler that cannot shed the heat, and every
+  attempt to tune around that made the system worse than leaving it alone.</p>
+</div>
 
 <p>Above <code>thermal_pause_above</code> the transcriber waits before starting
 the next decode, resuming below <code>thermal_resume_below</code>, with any
@@ -516,6 +1172,16 @@ interesting.</p>
   <tr><td><code>webui.py</code></td><td>The web interface. Reads the database, serves port 8080.</td></tr>
   <tr><td><code>watchkeeper.toml</code></td><td>All configuration: presets, channels, thresholds.</td></tr>
   <tr><td><code>docs.html</code></td><td>This document.</td></tr>
+  <tr><td><code>brief_prompt.txt</code></td>
+      <td>The prompt the <a href="#brief">AI brief</a> sends. A loose file on
+          purpose: edit the wording and the next run uses it, with no patch
+          and no restart.</td></tr>
+  <tr><td><code>*_API_Key.txt</code></td>
+      <td>API keys, one per provider &mdash; <code>GEMINI_API_KEY.txt</code>,
+          <code>xai_API_Key.txt</code>. Found by name, read on each run, never
+          logged. These are secrets: they do not belong in the repository, and
+          they are the reason <code>watchkeeper.toml</code> does not hold the
+          key itself.</td></tr>
   <tr><td><code>refresh.sh</code></td><td>Wipes the log and recordings for a clean test. See <a href="#admin">§10</a>.</td></tr>
 </table>
 
@@ -549,6 +1215,10 @@ alongside the programs so they travel with the rest of the software.</p>
       <td>One WAV per message. <strong>On tmpfs — see below.</strong></td></tr>
   <tr><td><code>~/wx_corpus/</code></td>
       <td>Benchmark corpus and <code>truth.json</code>. On the card, persistent.</td></tr>
+  <tr><td><code>~/watchkeeper/briefs/</code></td>
+      <td>One JSON file per <a href="#brief">AI brief</a>, named for the UTC
+          minute it was written, holding the report, its KML, and what was
+          asked. Small &mdash; tens of kB each.</td></tr>
   <tr><td><code>~/run.log</code></td>
       <td>Only if <code>--log</code> was used on a hand-started run. Append-only,
       <strong>no rotation</strong> — it grows without limit on the card. The
@@ -604,12 +1274,29 @@ later.</p>
 <h3><code>[radio]</code> — global defaults</h3>
 <table>
   <tr><th>Key</th><th>Meaning</th></tr>
-  <tr><td><code>gain</code></td><td>Tuner gain in dB. <code>"0"</code> selects the tuner's own AGC.</td></tr>
+  <tr><td><code>gain</code></td><td>Tuner gain in dB. <code>"0"</code> selects the tuner's own AGC.
+      On the boat this is 15.7 &mdash; see <a href="#intermod">4.6.1</a> for why it is so low.</td></tr>
+  <tr><td><code>target_rms</code></td>
+      <td>Output level as a fraction of full scale. 0.2 is about &minus;14&nbsp;dBFS.</td></tr>
+  <tr><td><code>max_norm_gain_db</code></td>
+      <td>Cap on the lift applied to a quiet clip, so near-silence is not amplified into hiss.
+      Raise it with <code>target_rms</code>, never alone.</td></tr>
+  <tr><td><code>min_transcribe_quality</code>, <code>min_transcribe_s</code></td>
+      <td>Skip the decode for clips below this readability or length. Audio is still kept.
+      See <a href="#gate">4.6.2</a>. 0 disables.</td></tr>
+  <tr><td><code>always_transcribe</code></td>
+      <td>Channel names exempt from both gates.</td></tr>
   <tr><td><code>ppm</code></td><td>Crystal error correction. The V4's TCXO needs none.</td></tr>
   <tr><td><code>model</code></td><td>Whisper model. <code>small.en</code>.</td></tr>
   <tr><td><code>cpu_threads</code>, <code>beam_size</code></td><td>Decoder cost.</td></tr>
   <tr><td><code>temperatures</code></td><td>Fallback ladder. A single entry disables retries.</td></tr>
-  <tr><td><code>max_messages</code></td><td>Retention. Default 100.</td></tr>
+  <tr><td><code>max_messages</code></td><td>Rows kept, oldest deleted first. Default 100.</td></tr>
+  <tr><td><code>home_lat</code>, <code>home_lon</code></td>
+      <td>Where the receiver is, in decimal degrees. Enables position links.</td></tr>
+  <tr><td><code>coord_max_nm</code></td>
+      <td>Positions further off than this are ignored. Nautical miles, default 500.</td></tr>
+  <tr><td><code>home_source</code>, <code>home_refresh_s</code></td>
+      <td>URL of a live position feed (Signal K), and how often to poll it.</td></tr>
   <tr><td><code>low_conf_avg_logprob</code>, <code>low_conf_no_speech</code></td>
       <td>Where a transcript is marked unclear.</td></tr>
 </table>
@@ -650,7 +1337,7 @@ leak between presets.</p>
           already established that something transmitted.</td></tr>
   <tr><td><code>no_speech_threshold</code>, <code>log_prob_threshold</code></td>
       <td>Raised on marine to keep marginal speech.</td></tr>
-  <tr><td><code>max_tokens_per_second</code></td><td>Output cap. 8 is generous.</td></tr>
+  <tr><td><code>max_tokens_per_second</code></td><td>Output cap, in tokens per second of audio. 8 is generous. <strong>Maximum 14.</strong> The value handed to the decoder is <code>30 &times; this + 16</code>, against Whisper's 448-token context; faster-whisper raises rather than clamping, so 15 makes every message fail. See <a href="#tokencap">4.7.1</a>.</td></tr>
   <tr><td><code>prompt</code></td><td>Decoder priming. Absent on marine — see §4.9.</td></tr>
   <tr><td><code>hallucination_list</code></td><td>Optional generated phrase list.</td></tr>
   <tr><td><code>thermal_pause_above</code> etc.</td><td>Thermal governor. 0 disables.</td></tr>
@@ -762,23 +1449,97 @@ and restarted without disturbing reception.</p>
 settings panel closed: <strong>AUTO</strong> when autoplay is on, and a red
 <strong>THROTTLED</strong> when the Pi is currently running below full speed.</p>
 
+<h3>Search &mdash; /search</h3>
+<p>Finds text across every transcript in the permanent <code>history</code>
+table, not just the recordings still in the live log. Terms are combined with
+AND; a phrase in double quotes matches whole. <code>%</code> and
+<code>_</code> are escaped, so searching <code>100%</code> finds a hundred
+percent rather than everything. A channel filter and the query are both in the
+URL, so a result set can be bookmarked or sent to someone.</p>
+
+<p>Each result offers <b>play</b>, <b>in log</b> and <b>zip</b> &mdash; but
+only while the recording still exists. Otherwise it reads <em>audio aged
+out</em>, which is the honest state of affairs: the transcript is permanent,
+the WAV is not. Three things remove one:</p>
+
+<ul>
+  <li><b>Eviction</b> once the message falls past <code>max_messages</code>
+      &mdash; roughly a day at current traffic.</li>
+  <li><b>A reboot</b>, because the recordings are on tmpfs. Every WAV goes at
+      once, whatever its age.</li>
+  <li><b><code>refresh.sh</code></b>, which clears <code>messages</code> and
+      the WAVs and deliberately leaves <code>history</code> alone.</li>
+</ul>
+
+<p>So if a search turns up something whose audio matters, download the zip
+immediately. Once it is gone the transcript is all that remains, and
+<a href="#modelbench">4.7.2</a> is the reason not to trust a transcript
+alone.</p>
+
+<p><b>in log</b> jumps to that message in the main log so it can be read in
+context. The quality and length sliders and the mute set are relaxed only if
+they would otherwise hide the target &mdash; a 44% radio check is exactly what
+one searches for and exactly what the quality filter removes &mdash; and the
+relaxation is not saved, so a reload restores your own settings.</p>
+
+<p>Timestamps on this page are <strong>wall clock</strong>, with a relative
+hint beneath, because results span days. The main log shows elapsed time. The
+two conventions sit one click apart and look alike, which is why the hint is
+there.</p>
+
 <h3>The settings panel</h3>
 <p>Collapsed by default, state remembered per browser.</p>
+<p>It also carries the page links &mdash; <b>Search</b>, <b>Export</b>, <b>AI brief</b>, <b>Thermal report</b>, the operator guide, and <b>Top of log</b>. They used to sit in the footer, which on a phone meant scrolling past every message to reach them.</p>
 <ul>
-  <li><strong>CPU and NPU temperature</strong> and the raw throttle flags.
+  <li><strong>CPU temperature.</strong> The raw throttle word is not shown:
+      its "since boot" bits stay set until a reboot, so it reads as a permanent
+      fault light and invites rebooting to clear it. Live throttling still
+      raises a warning here and a chip beside the title, which is the part
+      worth acting on. <code>vcgencmd get_throttled</code> has the full word.
       Historical flags are deliberately not shown as a warning — they persist
       until reboot, which trains you to reboot to clear a light rather than to
       fix anything.</li>
   <li><strong>Quality slider</strong>, 0&ndash;90%. Hides messages below the
       cut. Messages recorded before the score existed are never hidden.</li>
+  <li><strong>Length slider</strong>, 0&ndash;10&nbsp;s. Hides messages shorter
+      than the cut. A keyed-up mic, a squelch tail and a burst of interference
+      all arrive as one- or two-second clips, and length sorts them out more
+      cheaply than any measure of the audio. Around 2&nbsp;s removes most of
+      them; a genuine "Roger, standing by" is about 1.5&nbsp;s, so going much
+      above 3&nbsp;s starts costing real traffic.</li>
   <li><strong>Hide No Speech</strong> and <strong>AutoPlay</strong>.</li>
-  <li><strong>Channel legend</strong>, tappable to mute a channel.</li>
+  <li><strong>Channel legend</strong>, tappable to mute a channel. Two columns
+      on a phone, three on a wide screen; below about 520&nbsp;px the
+      frequencies give way so the channel names stay whole. The count beside
+      each channel honours the sliders but ignores muting, so a muted channel
+      shows how many messages are waiting behind it &mdash; exactly what you
+      would get back by switching it on, rather than a zero that tells you
+      nothing.</li>
+  <li><strong>Coordinate converter</strong> and the home position in use.</li>
 </ul>
 
 <h3>Message rows</h3>
 <p>Colour bar, age, duration, channel, quality percentage, transcript.
 Tap to play; tap again to pause. Amber quality below 60%. A red
 <strong>LISTEN</strong> badge marks distress vocabulary.</p>
+
+<h3>The map pin</h3>
+<p>A pin appears above the download button when the message contained a
+position within <code>coord_max_nm</code>, with the distance from the receiver
+under it in nautical miles &mdash; tenths close in, whole numbers further off.
+It opens Google Maps framed to show that point <em>and</em> where you are, so
+the scale tells you whether something is close or on the far side of the
+bight &mdash; a pin on its own opens at street level and says nothing useful.
+Hovering shows the position in degrees and decimal minutes. See
+<a href="#theory">&sect;4.12</a> for what is and is not recognised.</p>
+
+<h3>The coordinate converter</h3>
+<p>At the bottom of the settings panel is a box for typing a position in the
+format the Coast Guard reads them out &mdash; <code>33-01.923 north,
+117-22.636 west</code> &mdash; which opens Google Maps at that point. It accepts
+anything the log itself accepts, including the spoken forms, because it asks
+the receiver to do the parsing rather than repeating the work in the page.
+Press Enter or tap Open.</p>
 
 <h3>The download button</h3>
 <p>The small arrow at the right of each row downloads a zip containing the WAV
@@ -807,6 +1568,278 @@ AUDIO ANALYSIS
 two most useful lines when a message reads "no speech found" — they show
 whether the decoder returned nothing or said something that a filter removed,
 and which filter did it.</p>
+
+<h3 id="exportpage">Export page &mdash; /export</h3>
+<p>A form over the endpoint below, reached from <b>Export</b> in the settings
+panel. It exists because the useful exports are the narrow ones, and typing a
+correct query string on a phone is miserable.</p>
+
+<ul>
+  <li><b>Channels</b> are listed as they appear in the database, each with its
+      message count, so an empty channel is obvious before you export it.
+      Ticking none and ticking all are the same request, and the page sends
+      the shorter of the two.</li>
+  <li><b>Time</b> is <em>All time</em>, <em>Recent</em> (1&nbsp;h, 6&nbsp;h,
+      24&nbsp;h, 3&nbsp;d, 7&nbsp;d, or a typed number of hours), or a
+      <em>Date range</em>. The two cannot both apply, which is why they are
+      one control rather than two.</li>
+  <li><b>Content</b> is the one filter that is on by default: <em>only
+      messages with a transcript</em>. Most of what a quiet channel logs is
+      gated or failed rows with nothing in them, and they swamp an analysis.
+      Beneath it are a readability floor and a minimum duration, both blank
+      for "any".</li>
+  <li><b>Rows</b> sets the cap, the sort direction, whether to keep only
+      messages whose audio still exists, and whether to run the position
+      parser.</li>
+</ul>
+
+<p>The URL it is building is shown as you work, and beneath it a live count of
+how many messages match. The count is the same query with
+<code>limit=1</code>, debounced, so moving a control does not fire a database
+query per keystroke at a receiver that is already demodulating six channels.
+When the match count exceeds the row cap, the page says so rather than letting
+you download a silently truncated file.</p>
+
+<p><strong>Date range is entered in the browser's local time</strong> and sent
+with that offset attached, so the window matches the clock you typed. The log
+records UTC, and the endpoint reads an unzoned stamp as UTC &mdash; a range
+typed into a hand-built URL without an offset will be out by however far you
+are from Greenwich. The page's own <code>filters</code> echo in the result is
+the quickest way to confirm which window actually ran.</p>
+
+<p><b>Download JSON</b> saves the file; <b>Open in a tab</b> shows it
+formatted; <b>Copy URL</b> gives you the same query for
+<code>curl</code> or a script. Over plain HTTP on the LAN the clipboard API is
+usually unavailable &mdash; it needs a secure context &mdash; so the button
+falls back to selecting the text for you.</p>
+
+<h3 id="export">JSON export &mdash; /api/export</h3>
+<p>The machinery behind <a href="#exportpage">the export page</a>, and
+usable on its own: a plain HTTP GET that returns the whole log as JSON for
+analysis elsewhere. It reads <code>history</code>, not <code>messages</code>,
+so it
+reaches everything ever recorded rather than the last
+<code>max_messages</code>, and it carries the engineering columns the live
+feed leaves out: <code>gain_db</code>, <code>rtf</code>,
+<code>soc_temp_c</code>, <code>thermal_wait_s</code>,
+<code>noise_floor_db</code>, <code>norm_gain</code>,
+<code>peak_pre_limit</code> and the active <code>preset</code>.</p>
+
+<p>Every filter is optional. With none, the newest 5,000 rows come back.</p>
+
+<table>
+  <tr><th>Parameter</th><th>Meaning</th></tr>
+  <tr><td><code>channel</code></td>
+      <td>One, several, or <code>all</code>. Repeat the parameter or
+          comma-separate. A channel can be named by number
+          (<code>16</code>, <code>22A</code>, <code>09</code>), by short
+          form (<code>ch16</code>) or by its full label
+          (<code>Ch16&nbsp;Distress</code>); the reference receivers answer
+          to <code>ref-a</code> and <code>ref-b</code>.</td></tr>
+  <tr><td><code>from</code>, <code>to</code></td>
+      <td>Absolute window, inclusive. ISO 8601 or epoch seconds:
+          <code>2026-10-04</code>, <code>2026-10-04T18:30</code>,
+          <code>2026-10-04T18:30:00Z</code>, <code>1759600000</code>. A
+          stamp with no zone is read as <strong>UTC</strong>, which is what
+          the watchkeeper records.</td></tr>
+  <tr><td><code>hours</code></td>
+      <td>Relative age &mdash; everything within the last N hours.
+          Fractions allowed.</td></tr>
+  <tr><td><code>limit</code></td>
+      <td>Row cap. Default 5,000, maximum 100,000.</td></tr>
+  <tr><td><code>order</code></td>
+      <td><code>desc</code> (default, newest first) or <code>asc</code>.</td></tr>
+  <tr><td><code>audio</code></td>
+      <td><code>1</code> returns only rows whose WAV is still on disk.</td></tr>
+  <tr><td><code>text</code></td>
+      <td><code>1</code> drops every row with no transcript &mdash; gated,
+          failed, and anything the decoder returned as whitespace. On a quiet
+          channel this is most of what gets logged.</td></tr>
+  <tr><td><code>min_quality</code></td>
+      <td>Readability floor, 0&ndash;100. See <a href="#gate">4.6.2</a> for
+          what the number means.</td></tr>
+  <tr><td><code>min_duration</code></td>
+      <td>Shortest transmission to include, in seconds.</td></tr>
+  <tr><td><code>positions</code></td>
+      <td><code>1</code> runs the coordinate parser over each transcript.
+          Off by default because it is a regex pass per row.</td></tr>
+  <tr><td><code>pretty</code></td>
+      <td><code>1</code> indents the JSON.</td></tr>
+  <tr><td><code>download</code></td>
+      <td><code>1</code> adds a <code>Content-Disposition</code> header so a
+          browser saves the file instead of displaying it.</td></tr>
+</table>
+
+<p><code>hours</code> and <code>from</code>/<code>to</code> both set the time
+window, so asking for both is rejected with a 400 rather than resolved. A
+scripted export that silently covered the wrong span would be worse than one
+that failed.</p>
+
+<p><strong>A row with no recorded value passes a threshold.</strong> Messages
+archived before the quality column existed have no readability score, and
+rather than invent a second convention the export follows the one the log's
+sliders, the pre-transcription gate and the search page already use: unknown
+is never hidden. It is the right default for a watchkeeper &mdash; losing a
+distress call to a missing column would be the worse failure &mdash; but it
+means <code>min_quality=60</code> does not guarantee every row scored 60. The
+response says so in <code>filters.threshold_note</code>, and
+<code>quality: null</code> on the row itself is how to find them. Filter those
+out downstream if the analysis cannot tolerate them.</p>
+
+<pre><code># everything
+curl -s http://apogeerpivhf.local:8080/api/export | jq '.total'
+
+# Ch16 and Ch22A, last six hours, oldest first
+curl -s 'http://apogeerpivhf.local:8080/api/export?channel=16,22A&amp;hours=6&amp;order=asc'
+
+# one calendar day, saved to a file
+curl -sOJ 'http://apogeerpivhf.local:8080/api/export?from=2026-10-04&amp;to=2026-10-05&amp;download=1'
+
+# what channels exist, with first and last sighting
+curl -s http://apogeerpivhf.local:8080/api/export/channels | jq</code></pre>
+
+<p>The envelope reports what was asked and what was done:</p>
+
+<pre><code>{
+  "total": 48213,         # rows matching the filters
+  "returned": 5000,       # rows in this response, capped by limit
+  "truncated": true,      # total &gt; returned, so raise limit or narrow
+  "order": "desc",
+  "limit": 5000,
+  "filters": { ... },     # the filters as understood, after parsing
+  "generated_at": "2026-10-05T13:12:02+00:00",
+  "messages": [ ... ]
+}</code></pre>
+
+<p><code>filters</code> is the parsed form, not the raw query, so a
+misunderstanding shows up in the output rather than in the numbers. A channel
+term that matched nothing appears there as
+<code>ignored_channel_terms</code> while the rest of the export proceeds; a
+request where <em>no</em> term matched is a 400 that lists the keys that do
+exist. <code>/api/export/channels</code> is the cheap way to find those
+without guessing.</p>
+
+<p>Each row carries <code>msg_id</code> and <code>audio_available</code>.
+When the WAV is still present, <code>/audio/&lt;msg_id&gt;</code> plays it and
+<code>/download/&lt;msg_id&gt;</code> returns the zip; once it has aged out
+<code>msg_id</code> is <code>null</code>. The transcript is permanent, the
+audio is not &mdash; the three ways a recording disappears are listed under
+<a href="#webui">Search</a>.</p>
+
+<p>Aliases <code>/api/export.json</code> and <code>/export.json</code> are
+the same endpoint, for tools that insist on an extension.</p>
+
+<h3 id="brief">AI traffic brief &mdash; /brief</h3>
+<p>Hands the last 24 hours of Ch16 and Ch22A traffic to a language model and
+asks for a safety brief: what happened, what is still active, what is within
+100&nbsp;nm, and what the weather is doing. Reached from <b>AI brief</b> in the
+settings panel. One button, one call, a few minutes.</p>
+
+<p>It is a summary of transcripts, not a source of truth. Everything in it
+descends from Whisper output that <a href="#modelbench">4.7.2</a> shows is
+wrong often enough to matter, so each incident links back to the recording it
+came from. <strong>Listen to the clip before acting on anything.</strong></p>
+
+<h4>What it sends</h4>
+<p>The prompt lives in <code>brief_prompt.txt</code> beside
+<code>webui.py</code>; edit it and the next run picks it up, no restart and no
+patch. The data is whatever <code>export_query</code> returns from
+<a href="#export">/api/export</a>, by default:</p>
+<pre><code>channel=16,22a&amp;hours=24&amp;text=1&amp;min_quality=55&amp;min_duration=3</code></pre>
+
+<p>Two substitutions happen before the prompt goes out.</p>
+<ul>
+  <li><code>&lt;&lt;Current Position&gt;&gt;</code> becomes the receiver's
+      position <em>and how it was obtained</em> &mdash; a live Signal K fix
+      with its age, or the configured position with a warning that it is not a
+      fix, or an instruction not to compute distances at all when neither
+      exists. A brief that quietly measured distances from a week-old assumed
+      position would be worse than no brief.</li>
+  <li>Every message that still has audio gains a <code>clip_url</code> field,
+      built server-side from <code>msg_id</code> &mdash; the id the log
+      actually anchors on. The model is told to copy that field and never to
+      assemble a URL itself, which is what keeps the links working: the log
+      anchors on <code>messages.id</code>, not on <code>hid</code>, and a
+      message whose WAV has aged out gets no field and therefore no link.</li>
+</ul>
+
+<h4>What comes back</h4>
+<p>One non-streaming POST to an OpenAI-compatible chat endpoint; the reply is
+an HTML fragment, optionally followed by a KML document between
+<code>&lt;&lt;&lt;KML&gt;&gt;&gt;</code> markers. The server splits the two,
+saves them together, and serves the KML at
+<code>/brief/&lt;id&gt;/vhf-alert-locations.kml</code> &mdash; then rewrites
+whatever link the model wrote to point there, so the download works whatever
+filename it guessed.</p>
+
+<p><strong>The HTML is stripped before any browser sees it.</strong> Scripts,
+iframes, embedded objects, inline <code>on*</code> handlers and
+<code>javascript:</code> URLs are removed server-side. This is not
+hypothetical caution: the input to this system is a VHF receiver, so the
+transcripts are unauthenticated text from strangers, and the prompt separately
+tells the model to treat them as data and to report any transcript that
+appears to contain instructions as an unusual transmission.</p>
+
+<h4>Running it</h4>
+<p>A run is started by <code>POST /api/brief/run</code> &mdash; POST rather
+than GET so a link prefetcher, a chat client unfurling a URL or a link checker
+cannot spend money by accident. Only one runs at a time; a second request
+joins the first rather than paying twice. The page polls
+<code>/api/brief/status</code> every two seconds and shows an elapsed timer
+and the current step. Closing the page does not stop the run: the elapsed time
+comes from the server, so re-opening mid-run picks the job up at its true age
+rather than restarting the clock.</p>
+
+<p>Briefs are kept under <code>&lt;base_dir&gt;/briefs/</code>, newest first in
+the dropdown, oldest pruned when the count passes <code>keep_briefs</code>
+&mdash; the same oldest-first rule the message stack uses.</p>
+
+<h4><code>[ai]</code> in the config file</h4>
+<p>Every key is optional. This block is read by <code>webui.py</code> alone,
+fresh on each run, so changing it needs neither a patch nor a watchkeeper
+restart.</p>
+<table>
+  <tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>model</code></td><td><code>grok-4.7</code></td>
+      <td>Model ids move. Check the live list before pinning one.</td></tr>
+  <tr><td><code>endpoint</code></td>
+      <td><code>https://api.x.ai/v1/chat/completions</code></td>
+      <td>Any OpenAI-compatible chat endpoint.</td></tr>
+  <tr><td><code>timeout_s</code></td><td><code>600</code></td>
+      <td>Reasoning models sit for a while. This is not the HTTP request the
+          browser made &mdash; that returned immediately.</td></tr>
+  <tr><td><code>temperature</code></td><td><code>0.3</code></td><td></td></tr>
+  <tr><td><code>key_file</code></td><td>blank</td>
+      <td>Blank means look beside <code>webui.py</code> for a file whose name
+          matches <code>xai*key*.txt</code>, case-insensitively.</td></tr>
+  <tr><td><code>prompt_file</code></td><td><code>brief_prompt.txt</code></td>
+      <td>Relative to <code>webui.py</code>.</td></tr>
+  <tr><td><code>export_query</code></td>
+      <td>Ch16+22A, 24&nbsp;h, with text, q&nbsp;&ge;&nbsp;55, &ge;&nbsp;3&nbsp;s</td>
+      <td>Any query <a href="#export">/api/export</a> accepts.</td></tr>
+  <tr><td><code>max_messages</code></td><td><code>1200</code></td>
+      <td>Row cap, applied only when <code>export_query</code> sets no
+          <code>limit</code>.</td></tr>
+  <tr><td><code>keep_briefs</code></td><td><code>30</code></td><td></td></tr>
+  <tr><td><code>brief_dir</code></td><td>blank</td>
+      <td>Blank means <code>&lt;base_dir&gt;/briefs</code>.</td></tr>
+  <tr><td><code>base_url</code></td><td>blank</td>
+      <td>Blank means whatever host the browser used, so clip links come back
+          over Tailscale when you asked over Tailscale. Set it if briefs are
+          read somewhere other than where they are run.</td></tr>
+</table>
+
+<p>The API key is read from its file on each run and never logged, never
+written into a brief, and never returned by any endpoint. The only thing a
+failed call puts on the page is the status line and body the endpoint
+returned.</p>
+
+<h4>When it fails</h4>
+<p>Nothing is saved and the log is untouched &mdash; the receiver has no part
+in this. The page shows the reason: a key that was not found, an HTTP status
+from the endpoint with its body, an unreachable host, or no matching traffic
+at all, which is the usual one after a quiet night with
+<code>min_quality=55</code> in force.</p>
 
 <!-- ========================================================= -->
 <h2 id="admin">10. Routine administration</h2>
@@ -1058,9 +2091,9 @@ filter is firing on something it should not.</p>
 <ol>
   <li>Check the fan is actually spinning. It is easy to leave the connector
       half-seated after any work on the case.</li>
-  <li>Remove the AI HAT if fitted. It is not used, it sits directly over the
-      SoC blocking the cooler's airflow, and it was measured costing several
-      degrees of headroom at idle.</li>
+  <li>Remove the AI HAT if one is fitted. It is not used, it sits directly
+      over the SoC blocking the cooler's airflow, and it was measured costing
+      several degrees of headroom at idle. This receiver no longer has one.</li>
   <li>Drop a channel. Each receiver is roughly 10% of a core.</li>
   <li>Lower <code>cpu_threads</code> to 2, or <code>temperatures</code> to a
       single entry.</li>
@@ -1086,6 +2119,40 @@ reduce the channel count.</p>
 <p>Broken-pipe messages in the web interface log are normal: a browser closing
 an audio stream mid-transfer does that every time you seek or navigate away.</p>
 
+<h3>Messages seem to be missing, or the list is not moving</h3>
+
+<p>First establish whether the row is in the database or only absent from the
+page, because they are different faults:</p>
+
+<pre><code>sqlite3 ~/watchkeeper/watchkeeper.db "select id,status,quality from messages order by id desc limit 20;"
+curl -s localhost:8080/api/messages | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['messages']),'rows')"</code></pre>
+
+<p>Gaps in the id sequence near the newest rows mean something deleted them.
+Retention only ever deletes the oldest ids, so recent gaps point at
+<code>reconcile()</code> — rows whose WAV had gone, which is expected after a
+reboot but not otherwise.</p>
+
+<p>If the rows are in the API but not on the page, it is the page's own state.
+The relevant values are plain globals, so the browser console will say which:</p>
+
+<pre><code>msgs.length, shown.length, document.querySelectorAll('.row').length
++snrCut.value        // 0 means the quality slider is filtering nothing
+hideEmpty            // true hides "no speech found" rows
+[...muted]           // channels switched off from the legend
+</code></pre>
+
+<p><strong>Muting persists.</strong> Clicking a channel in the legend stores it
+in <code>localStorage</code>, so a stray click weeks ago still hides that
+channel's traffic on that browser. <code>muted.clear(); applyFilters();
+render();</code> in the console clears it.</p>
+
+<p>A stalled page is the other cause, and the tell is the header: it reads
+<code>offline — no connection to the receiver</code> and the pip beside the
+title goes dim when a poll has failed. Over a tailnet or marina wifi,
+<code>ERR_CONNECTION_TIMED_OUT</code> on <code>/api/messages</code> is common;
+the page keeps the last good snapshot until a poll succeeds. Reload if the
+indicator does not clear.</p>
+
 <h3>After a reboot</h3>
 <p><code>removed N row(s) whose audio is gone</code> is expected — recordings
 are in RAM. If <code>findmnt -n -o FSTYPE ~/watchkeeper/audio</code> does not
@@ -1109,24 +2176,47 @@ peaks and open counts; <code>rtl_power</code> gives a spectrum survey.</p>
 <h2 id="limits">12. Known limits</h2>
 
 <h3>Transcription accuracy</h3>
-<p>Seven configurations were benchmarked against a hand-transcribed corpus.
-Median word error rate on marine traffic:</p>
+<p>Sixteen configurations were benchmarked on 4&nbsp;October against two
+hand-transcribed clips &mdash; one strong, one marginal. The table is in
+<a href="#modelbench">4.7.2</a>; it supersedes the seven-model summary that
+used to sit here and the recommendation of <code>small.en</code> that went
+with it. <code>medium.en</code> has been in use since the cooler swap gave it
+the thermal headroom.</p>
 
-<table>
-  <tr><th>Model</th><th>WER</th><th>Notes</th></tr>
-  <tr><td><code>medium.en</code></td><td>0.53</td><td>Triple the cost of small for almost nothing</td></tr>
-  <tr><td><code>small.en</code></td><td>0.60</td><td><strong>In use</strong></td></tr>
-  <tr><td><code>distil-small.en</code></td><td>0.80</td><td>Lost badly despite the promise</td></tr>
-  <tr><td><code>distil-medium.en</code></td><td>0.80</td><td>Same</td></tr>
-  <tr><td><code>base.en</code>, <code>tiny.en</code></td><td>1.00</td><td>Unusable</td></tr>
-  <tr><td>Hailo NPU, <code>base</code></td><td>1.00</td><td>3% of clips readable vs 32% for small.en</td></tr>
-</table>
+<p>What survives from the older reading is the shape of the problem rather
+than the ranking. Signal quality is still the binding constraint, and no
+model recovers a transmission the receiver did not capture cleanly; none of
+the sixteen read S&eacute;curit&eacute; or PAN&nbsp;PAN correctly, and every
+distilled variant mangles positions. The difference the benchmark did show is
+that the gap between models widens exactly where it matters &mdash; a point
+apart on a strong clip, twenty-one apart on a weak one &mdash; which is why
+the larger model earns its cost on marginal traffic even though it looks like
+a rounding error on good traffic.</p>
 
-<p>Model selection is a dead end on this hardware. Signal quality is the binding
-constraint, and it is fixed with an antenna, not a setting.</p>
+<h3>The AI brief</h3>
+<p>Two layers of guessing sit on top of each other, and the second cannot
+repair the first. Whisper decides what was said; the model then decides what
+it meant. <a href="#modelbench">4.7.2</a> measured the first layer at a word
+error rate that makes a position, a vessel name or a channel number a coin
+toss on marginal traffic, and no amount of reasoning recovers a word the
+decoder never heard. The model is told to flag ambiguity rather than invent a
+fix, which helps and does not cure.</p>
+
+<p>So the brief is a <em>reading aid for the log</em>, not a substitute for
+it. Every incident carries a link to the recording it came from, and that link
+is the point of the feature. Treat anything in a brief that would change what
+you do &mdash; a distress position, a closure, a cancellation &mdash; as
+unconfirmed until you have heard the clip or seen the original transcript.</p>
+
+<p>The second limit is temporal. A brief is a snapshot of one window, written
+once. It does not update, it does not know what arrived after it ran, and a
+cancellation broadcast five minutes later will not appear in it. The log is
+live; the brief is not.</p>
 
 <h3>The AI HAT+ 2</h3>
-<p>Benchmarked and not used for speech. <code>base</code> is the largest variant
+<p>Bought, fitted, benchmarked, and since removed from this receiver. Recorded
+here because the result is the useful part.</p>
+<p>Not used for speech. <code>base</code> is the largest variant
 the Hailo apps offer, and both <code>tiny</code> variants return punctuation
 soup because their decoder architecture is mishandled. The NPU runs about 28&nbsp;°C
 cooler and leaves the CPU free, but it cannot match <code>small.en</code>.</p>

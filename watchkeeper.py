@@ -33,15 +33,19 @@ External:     rtl_sdr (rtl-sdr package)
 import argparse
 import json
 import collections
+import glob
 import logging
 import os
 import queue
+import math
 import re
 import signal
 import sqlite3
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 import tomllib
 import time
 from dataclasses import dataclass
@@ -61,6 +65,24 @@ DB_PATH = os.path.join(BASE_DIR, "watchkeeper.db")
 # Shown as the title of the web interface and at the head of exported
 # transcripts. Set station_name in [radio] to your vessel or station name.
 STATION_NAME = "Radio Log"
+
+# Where the receiver is, in decimal degrees, used to decide which positions
+# mentioned in a transcript are near enough to be worth a map link. Leave at
+# None to disable position links entirely.
+HOME_LAT = None
+HOME_LON = None
+COORD_MAX_NM = 500.0
+
+# A URL returning the vessel's position as JSON, polled in the background so
+# the figures above track the boat instead of being edited by hand. Signal K
+# serves exactly this shape:
+#
+#   http://<cerbo>:3000/signalk/v1/api/vessels/self/navigation/position
+#
+# A live fix always wins over HOME_LAT/HOME_LON, which stay as the fallback
+# for when the source is unreachable.
+HOME_SOURCE = None
+HOME_REFRESH_S = 300.0
 
 SDR_SAMPLE_RATE = 2_048_000      # Hz, complex
 SDR_GAIN = "36.4"                # dB; "0" selects the tuner's own AGC
@@ -184,13 +206,68 @@ NOMINAL_IDLE_NOISE = 0.86        # what the metric reads on pure noise
 FLATNESS_SPEECH = 0.05
 FLATNESS_NOISE = 0.55
 
+# Pre-transcription gate. The encoder always processes one padded 30-second
+# window, so a 1-second clip costs nearly as much to decode as a 25-second one
+# -- which makes skipping the hopeless ones worth real CPU and real heat.
+#
+# Both are OFF at 0. The audio and the database row are kept either way; only
+# the decode is skipped, so nothing disappears from the log and a gated clip
+# can still be played back or re-transcribed later.
+#
+# Set from listening, not from statistics: on this boat, clips scoring below
+# about 55 are unintelligible on replay, so any text Whisper produces for them
+# is invention rather than transcription. Discarding that is the point of the
+# gate, not its cost.
+# Thermal time series. 0 in either disables that half.
+#
+# 10 s because the SoC moves faster than that: the governor polls every 2 s,
+# a single decode runs 10-30 s, and at 30 s a burst that drove the chip from
+# 65 to 80 and back could land entirely between two samples. The cost is one
+# small INSERT every ten seconds -- about 8,600 rows a day, 60,000 and roughly
+# 3 MB a week -- which is negligible beside the database writes already
+# happening, and nothing beside the audio that tmpfs is keeping off the card.
+THERMAL_SAMPLE_S = 10.0          # seconds between temperature samples
+THERMAL_HISTORY_DAYS = 7.0       # samples older than this are dropped
+
+MIN_TRANSCRIBE_QUALITY = 0.0     # readability below which the decode is skipped
+MIN_TRANSCRIBE_S = 0.0           # clips shorter than this are mic pops
+# Channel names exempt from both gates, for a channel where a hopeless decode
+# is still worth attempting. Empty by default: the recording is kept
+# regardless, and an unintelligible clip does not become intelligible by being
+# fed to Whisper.
+ALWAYS_TRANSCRIBE = []
+
+# Channels eligible for the decoder at all. Empty means every voice channel,
+# which is the original behaviour. Naming channels here is the blunt
+# instrument for heat: on 3 Oct, Ch09 and Ch12 were 87% of messages and the
+# two channels actually watched -- Ch16 and Ch22A -- were 13%. Spending the
+# whole decode budget on the 13% is the better trade while the thermal
+# ceiling is the binding constraint.
+#
+# NOTHING IS LOST BY EXCLUDING A CHANNEL. The message is still recorded,
+# still in the log, still playable; it shows as "not transcribed" with the
+# reason. Re-add a channel and new traffic decodes again immediately.
+TRANSCRIBE_CHANNELS = []
+
 # Readability above which a transcript is never discarded outright, only
-# trimmed. Measured across clips with known outcomes: everything containing
-# real speech scored 72-95, everything the decoder invented scored 47-52.
-# Repetition heuristics work on text and cannot tell a Coast Guard station
-# identifying itself three times -- which is correct radio procedure -- from a
-# decoder stuck on a phrase. The audio can.
-KEEP_ABOVE_QUALITY = 65.0
+# trimmed. Repetition heuristics work on text and cannot tell a Coast Guard
+# station identifying itself three times -- which is correct radio procedure --
+# from a decoder stuck on a phrase. The audio can.
+#
+# 65 came from aviation clips, where real speech scored 72-95 and invented text
+# 47-52. On marine FM the whole scale is compressed -- nothing scores below
+# about 40, because discriminator noise is less spectrally flat than the white
+# noise FLATNESS_NOISE was calibrated against -- so 65 sits far higher in the
+# real distribution than it did there.
+#
+# On 27 Sep a naval securite broadcast scored 64 and was discarded by one
+# point: audible, correctly decoded, and thrown away because the speaker
+# repeated himself three times as the procedure requires. 60 keeps a margin
+# over min_transcribe_quality, which listening has put at 55.
+#
+# This must stay ABOVE min_transcribe_quality. Below it the guard is dead
+# code: nothing that fails it ever reaches the decoder to be guarded.
+KEEP_ABOVE_QUALITY = 60.0
 # Thresholds are stored as fractions of the measured idle value so they scale
 # with whatever the reference actually reports.
 OPEN_FRACTION = CARRIER_OPEN_NOISE / NOMINAL_IDLE_NOISE
@@ -225,6 +302,10 @@ MAX_MESSAGE_S = 30.0             # force-close a stuck or continuous transmitter
 # message and leave the speech too quiet. The gain cap stops a near-silent clip
 # from being amplified into noise.
 TARGET_RMS = 0.1                 # about -20 dBFS
+# Raising TARGET_RMS without raising this too makes quiet clips WORSE, not
+# better: they are the ones already pinned at the cap, so a higher target
+# simply moves further out of their reach while loud clips all get louder.
+# Move the two together unless you specifically mean to widen the spread.
 MAX_NORM_GAIN_DB = 20.0
 # Output ceiling, expressed as a crest factor over TARGET_RMS rather than as a
 # fraction of full scale. Measured speech crest after normalisation is about
@@ -249,6 +330,17 @@ CPU_THREADS = 2
 # ladder short when messages arrive faster than they can be transcribed.
 BEAM_SIZE = 2
 WHISPER_TEMPERATURES = [0.0, 0.2, 0.4]
+
+# Used ONLY to re-decode a clip whose first pass collapsed into a repetition
+# loop ("ATCG ATCG ATCG ATCG"). The ladder above is what normally escapes a
+# loop -- a looping transcript always fails the compression-ratio check, which
+# triggers the next temperature -- so a preset that sets temperatures = [0.0]
+# to cap decode time has no way out and loses the transmission entirely.
+#
+# Retrying here instead costs a second pass only on clips that would otherwise
+# be discarded whole, rather than on every marginal clip, which is what made
+# the full ladder expensive. Set to [] to disable the salvage.
+LOOP_RETRY_TEMPERATURES = [0.4, 0.6, 0.8]
 COMPRESSION_RATIO_THRESHOLD = 2.4
 # Prompts are per preset. A prompt primes the decoder's vocabulary, so the
 # weather-radio terms below would actively mislead it on Ch 16, where nobody
@@ -292,6 +384,12 @@ LOW_CONF_NO_SPEECH = 0.60
 # Without a cap a decoder that starts looping on noise runs to Whisper's
 # 448-token ceiling, which on a four-second clip means a real-time factor near
 # 50 -- and with a temperature ladder it does that once per temperature.
+WHISPER_WINDOW_S = 30.0          # Whisper encoder window. max_new_tokens is
+                                 # applied per window, not per clip, so the cap
+                                 # must be sized to the window: beyond 54 s the
+                                 # clip-sized value exceeded the model's 448-token
+                                 # ceiling and faster-whisper raised instead of
+                                 # clamping, failing every long bulletin.
 MAX_TOKENS_PER_SECOND = 8
 
 # Optional phrase list generated by fetch_hallucinations.py. Absent by default;
@@ -592,7 +690,14 @@ def load_hallucination_list(path):
         with open(os.path.expanduser(path)) as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        log.debug("no hallucination list at %s: %s", path, e)
+        # A warning, not a debug line. The config named a file, so not having
+        # it is a thing the operator asked for and did not get -- and a
+        # silently absent list is indistinguishable from a loaded one.
+        log.warning("hallucination list %s could not be read (%s). The "
+                    "built-in filters still apply; run "
+                    "fetch_hallucinations.py to build it, or remove "
+                    "hallucination_list from the config.",
+                    path, e.__class__.__name__)
         return 0, 0
 
     exact = [p.strip().lower() for p in data.get("exact", []) if p.strip()]
@@ -621,8 +726,27 @@ def strip_subtitle_corpus(text: str):
     followed it.
     """
     parts = re.split(r"(?<=[.!?])\s+", text)
-    kept = [p for p in parts if not SUBTITLE_CORPUS.search(p)]
-    if len(kept) == len(parts):
+    kept, changed = [], False
+    for p in parts:
+        m = SUBTITLE_CORPUS.search(p)
+        if m is None:
+            kept.append(p)
+            continue
+        changed = True
+        # Whisper often omits the sentence break before the outro, so the
+        # boilerplate lands INSIDE a part that also holds real speech:
+        #
+        #   '... going channel 16, over Thank you for watching! you you you'
+        #
+        # Dropping the whole part then discards the transmission and keeps
+        # the trailing loop -- the worst available outcome, and what happened
+        # to a Ch16 safety call on 3 Oct. So cut AT the match and keep the
+        # head. Two words is the floor the caller uses too: radio traffic is
+        # terse and "Roger, standing by" is a complete transmission.
+        head = p[:m.start()].strip(" ,;:-\u2013\u2014")
+        if len(re.findall(r"[A-Za-z0-9']+", head)) >= 2:
+            kept.append(head)
+    if not changed:
         return text, False
     return " ".join(kept).strip(), True
 
@@ -756,6 +880,333 @@ PRESETS = {
 log = logging.getLogger("watchkeeper")
 
 
+# ============================== Positions ==============================
+# The Coast Guard reads positions as degrees and decimal minutes:
+#
+#     "position 33-01.923 north, 117-22.636 west"
+#
+# Whisper renders that several different ways depending on how clearly it came
+# through -- as digits, as spoken words ("three-four hyphen zero one decimal
+# seven five zero north"), with "hyphen" misheard as "hypin", and with the
+# decimal point arriving as a second hyphen ("34-01-75 north"). All of those
+# are normalised to the same thing here.
+#
+# The decoder mishears the hemisphere too ("west" as "Texas"), so a group with
+# no hemisphere is resolved against the home position rather than guessed.
+
+
+_NUM_WORDS = {
+    "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "niner": "9",
+}
+_HYPHEN_WORDS = r"hyphens?|hypins?|hypens?|hyph\s*ins?|dash(?:es)?"
+_DECIMAL_WORDS = r"decimal\s*points?|decimals?"
+
+
+def _normalise(text):
+    """Rewrite a spoken position into digits without disturbing prose.
+
+    Two traps, both taken from real traffic on this receiver. "Point" alone is
+    an ordinary word -- "Point Conception", "the highest point of the vessel"
+    -- so only "decimal" introduces a fraction. And a lone number word is
+    usually prose ("one meter above water"), so number words are only read as
+    digits in a run of two or more, or next to a separator that a position
+    would have.
+    """
+    s = (text or "").lower()
+    for d in "‐‑–—":
+        s = s.replace(d, "-")
+    # Word hyphenation ("three-four") is not the degree separator; the spoken
+    # word "hyphen" is. Split the former, leave a hyphen between digits alone.
+    s = re.sub(r"(?<=[a-z])-(?=[a-z])", " ", s)
+    s = re.sub(r"[,;:]", " ", s)
+    s = re.sub(r"\b(?:%s)\b" % _DECIMAL_WORDS, " . ", s)
+    s = re.sub(r"\b(?:%s)\b" % _HYPHEN_WORDS, " - ", s)
+    # "34-hyphen 01" arrives with both a literal dash and the spoken word.
+    s = re.sub(r"-[\s-]*-", " - ", s)
+    # Keep a hyphen or period that sits between digits attached to them, so
+    # tokenising does not lose it.
+    s = re.sub(r"(?<=\d)\s*([-.])\s*(?=\d)", r"\1", s)
+
+    toks = s.split()
+    isnum = [t in _NUM_WORDS for t in toks]
+    near = lambda i: (0 <= i < len(toks)
+                      and (toks[i] in "-." or any(c.isdigit() for c in toks[i])))
+    out, i = [], 0
+    while i < len(toks):
+        if isnum[i]:
+            j = i
+            while j < len(toks) and isnum[j]:
+                j += 1
+            run = toks[i:j]
+            if len(run) >= 2 or near(i - 1) or near(j):
+                out.extend(_NUM_WORDS[t] for t in run)
+            else:
+                out.extend(run)
+            i = j
+        else:
+            out.append(toks[i])
+            i += 1
+    s = " ".join(out)
+
+    # "9 or 23" is "923" misheard, not two numbers.
+    s = re.sub(r"(?<=\d)\s+or\s+(?=\d)", " ", s)
+
+    prev = None
+    while prev != s:                      # "1 2 0" -> "120"
+        prev = s
+        s = re.sub(r"(?<=\d)\s+(?=\d)", "", s)
+    s = re.sub(r"\s*([-.])\s*(?=\d)", r"\1", s)
+    # Digits of the fraction read out singly come back hyphenated -- "01
+    # decimal 9-2-3". Past the decimal point a hyphen is never a separator.
+    s = re.sub(r"(\d{1,3}-\d{1,2}\.)((?:\d+-)+\d+)",
+               lambda m: m.group(1) + m.group(2).replace("-", ""), s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+_HEM = r"north|south|east|west|[nsew]"
+_POS_RE = re.compile(r"""
+    (?P<deg>\d{1,3}) - (?P<min>\d{1,2})
+    (?: \. (?P<frac>\d{1,4}) | - (?P<frac2>\d{1,4}) )?
+    (?: \s* (?P<hem>%s) (?![a-z]) )?
+""" % _HEM, re.X)
+
+
+def _value(m):
+    deg, mn = int(m.group("deg")), int(m.group("min"))
+    frac = m.group("frac") or m.group("frac2")
+    minutes = mn + (int(frac) / 10 ** len(frac) if frac else 0.0)
+    if minutes >= 60:
+        return None
+    return deg + minutes / 60.0
+
+
+def haversine_nm(a_lat, a_lon, b_lat, b_lon):
+    """Great-circle distance in nautical miles.
+
+    Nautical, not statute: the broadcasts themselves are in nautical miles
+    ("5 nautical miles west of Encinitas"), and so is every chart aboard.
+    """
+    r = 3440.065
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    h = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2)
+         * math.sin(math.radians(b_lon - a_lon) / 2) ** 2)
+    return 2 * r * math.asin(min(1.0, math.sqrt(h)))
+
+
+def format_position(lat, lon):
+    def part(v, pos, neg):
+        d = int(abs(v))
+        return f"{d:02d}-{(abs(v)-d)*60:06.3f}{pos if v >= 0 else neg}"
+    return f"{part(lat,'N','S')} {part(lon,'E','W')}"
+
+
+def maps_url(lat, lon):
+    """A pin at the point. Google's documented form, but it opens zoomed in."""
+    return f"https://www.google.com/maps/search/?api=1&query={lat:.6f},{lon:.6f}"
+
+
+def maps_url_fit(lat, lon, from_lat, from_lon, nm=None):
+    """A pin at the point, framed so where you are is on screen as well.
+
+    The documented api=1 search form has no zoom parameter, so it always opens
+    tight on the pin -- useless for judging whether something is close. This
+    centres between the two points and sets a zoom that fits the separation
+    into rather more than half the viewport.
+
+    Web mercator: metres per pixel = 156543.03 * cos(lat) / 2**z. Solving that
+    for a separation that should occupy FILL of a VIEWPORT-wide map gives the
+    zoom. Both constants are guesses at a typical screen; the result only has
+    to be close, since the point is the scale, not the framing.
+    """
+    VIEWPORT, FILL = 640.0, 0.55
+    if nm is None:
+        nm = haversine_nm(from_lat, from_lon, lat, lon)
+    metres = max(float(nm), 0.05) * 1852.0
+    per_px = metres / (FILL * VIEWPORT)
+    z = math.log2(156543.03392 * math.cos(math.radians(lat)) / per_px)
+    z = max(3.0, min(15.0, round(z, 1)))
+    mid_lat = (lat + from_lat) / 2.0
+    # Longitudes either side of the antimeridian would need wrapping; nothing
+    # inside a 500 nm radius of anywhere we run does, so the mean is fine.
+    mid_lon = (lon + from_lon) / 2.0
+    return (f"https://www.google.com/maps/place/{lat:.6f},{lon:.6f}"
+            f"/@{mid_lat:.6f},{mid_lon:.6f},{z}z")
+
+
+def _extract_latlon(data):
+    """Pull a latitude and longitude out of a JSON document.
+
+    Signal K wraps the pair in "value" and carries a pile of per-sensor
+    alternatives alongside it; take the top-level reading, which is the one
+    Signal K has already chosen between sources. Falls back to a bare object
+    so the setting also works against a plainer endpoint.
+    """
+    for scope in (data.get("value") if isinstance(data, dict) else None, data):
+        if not isinstance(scope, dict):
+            continue
+        for la, lo in (("latitude", "longitude"), ("lat", "lon"), ("lat", "lng")):
+            if isinstance(scope.get(la), (int, float)) and \
+               isinstance(scope.get(lo), (int, float)):
+                lat, lon = float(scope[la]), float(scope[lo])
+                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                    return lat, lon
+    return None
+
+
+class _LivePosition:
+    """Background poller for HOME_SOURCE.
+
+    Polls on its own thread so that nothing on the request path ever waits on
+    the boat's network, which on a marina wifi is not a safe thing to do. The
+    last good fix is kept and used until a better one arrives: a receiver that
+    has lost contact with the GPS has not moved, and a stale position a few
+    hundred metres out changes nothing about a 500-mile radius.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._fix = None          # (lat, lon, iso timestamp or None)
+        self._at = 0.0            # time.time() of that fix
+        self._thread = None
+        self._fails = 0
+
+    def start(self):
+        if self._thread is not None or not HOME_SOURCE:
+            return
+        self._thread = threading.Thread(target=self._loop, name="position",
+                                        daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        while True:
+            self._poll()
+            time.sleep(max(15.0, float(HOME_REFRESH_S or 300.0)))
+
+    def _poll(self):
+        try:
+            req = urllib.request.Request(HOME_SOURCE,
+                                         headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            self._fails += 1
+            # Loud once, then rarely: a boat with the instruments off should
+            # not fill the journal.
+            if self._fails == 1 or self._fails % 60 == 0:
+                log.warning("position source unreachable (%d attempt(s)): %s",
+                            self._fails, e)
+            return
+        got = _extract_latlon(data)
+        if not got:
+            self._fails += 1
+            if self._fails == 1:
+                log.warning("position source returned no usable position")
+            return
+        stamp = data.get("timestamp") if isinstance(data, dict) else None
+        with self._lock:
+            first = self._fix is None
+            self._fix, self._at = (got[0], got[1], stamp), time.time()
+        if first or self._fails:
+            log.info("position from %s: %.5f, %.5f", HOME_SOURCE, got[0], got[1])
+        self._fails = 0
+
+    def fix(self):
+        with self._lock:
+            return self._fix, self._at
+
+
+LIVE_POSITION = _LivePosition()
+
+
+def current_home():
+    """Where the receiver is: a live fix if there is one, else the config.
+
+    Returns (lat, lon, source, age_seconds) or None when position handling is
+    switched off altogether.
+    """
+    LIVE_POSITION.start()
+    fix, at = LIVE_POSITION.fix()
+    if fix:
+        return fix[0], fix[1], "live", max(0.0, time.time() - at)
+    if HOME_LAT is not None and HOME_LON is not None:
+        return float(HOME_LAT), float(HOME_LON), "config", None
+    return None
+
+
+def positions_in(text):
+    """find_positions() with the configured home position applied.
+
+    Returns [] when no home is set, which is what disables the feature: a map
+    pin on a position five thousand miles away is noise, and without a home
+    position there is no way to tell the difference.
+    """
+    home = current_home()
+    if home is None:
+        return []
+    return find_positions(text, home=(home[0], home[1]),
+                          max_nm=COORD_MAX_NM)
+
+
+def find_positions(text, home=None, max_nm=None):
+    """Positions mentioned in a transcript, as degrees and decimal minutes.
+
+    A longitude whose hemisphere the decoder lost -- "33-11.870 north by
+    117-44", where "west" came through as "Texas" -- is resolved only when a
+    home position is configured: whichever hemisphere puts the point nearer
+    home wins, and the result still has to pass the distance check. Without a
+    home position an unmarked group is discarded rather than guessed at.
+    """
+    seq = []
+    for m in _POS_RE.finditer(_normalise(text)):
+        val = _value(m)
+        if val is None:
+            continue
+        hem = (m.group("hem") or "")[:1]
+        if hem in ("n", "s"):
+            if val <= 90:
+                seq.append(("lat", -val if hem == "s" else val))
+        elif hem in ("e", "w"):
+            if val <= 180:
+                seq.append(("lon", -val if hem == "w" else val))
+        else:
+            seq.append(("?", val))
+
+    out, i = [], 0
+    while i < len(seq) - 1:
+        kind, lat = seq[i]
+        nkind, lon = seq[i + 1]
+        if kind != "lat" or nkind not in ("lon", "?"):
+            i += 1
+            continue
+        if nkind == "?":
+            if not home or lon > 180:
+                i += 1
+                continue
+            # Pick the hemisphere that puts it nearer home, then let the
+            # distance check below decide whether to keep it at all.
+            lon = min((lon, -lon), key=lambda v: haversine_nm(
+                home[0], home[1], lat, v))
+        entry = {"lat": round(lat, 6), "lon": round(lon, 6),
+                 "label": format_position(lat, lon),
+                 "url": maps_url(lat, lon),
+                 "assumed": nkind == "?"}
+        if home:
+            entry["nm"] = round(haversine_nm(home[0], home[1], lat, lon), 1)
+            if max_nm and entry["nm"] > max_nm:
+                i += 2
+                continue
+            # Framed to show both, which is the only way to tell at a glance
+            # whether something is near you or on the far side of the bight.
+            entry["url_fit"] = maps_url_fit(lat, lon, home[0], home[1],
+                                            entry["nm"])
+        out.append(entry)
+        i += 2
+    return out
+
+
 # ============================== Configuration file ==============================
 # Channels, names, modulation and filter settings live in watchkeeper.toml so
 # the program itself never has to be edited to add a frequency or move to a
@@ -786,6 +1237,7 @@ PRESET_OVERRIDES = {
     # traffic can afford a temperature ladder that a busy one cannot.
     "beam_size": "BEAM_SIZE",
     "temperatures": "WHISPER_TEMPERATURES",
+    "loop_retry_temperatures": "LOOP_RETRY_TEMPERATURES",
     "compression_ratio_threshold": "COMPRESSION_RATIO_THRESHOLD",
     "squelch_dbfs": "AM_SQUELCH_DBFS",
     "open_margin_db": "AM_OPEN_MARGIN_DB",
@@ -797,6 +1249,15 @@ PRESET_OVERRIDES = {
     "min_message_s": "MIN_MESSAGE_S",
     "min_snr_db": "MIN_SNR_DB",
     "limiter_crest": "LIMITER_CREST",
+    "target_rms": "TARGET_RMS",
+    "max_norm_gain_db": "MAX_NORM_GAIN_DB",
+    "min_transcribe_quality": "MIN_TRANSCRIBE_QUALITY",
+    "thermal_sample_s": "THERMAL_SAMPLE_S",
+    "thermal_history_days": "THERMAL_HISTORY_DAYS",
+    "keep_above_quality": "KEEP_ABOVE_QUALITY",
+    "min_transcribe_s": "MIN_TRANSCRIBE_S",
+    "always_transcribe": "ALWAYS_TRANSCRIBE",
+    "transcribe_channels": "TRANSCRIBE_CHANNELS",
     "transcribe_backlog": "TRANSCRIBE_BACKLOG",
     "max_message_s": "MAX_MESSAGE_S",
     "fm_open_noise": "CARRIER_OPEN_NOISE",
@@ -813,16 +1274,31 @@ STORAGE_OVERRIDES = {
 
 RADIO_OVERRIDES = {
     "station_name": "STATION_NAME",
+    "home_lat": "HOME_LAT",
+    "home_lon": "HOME_LON",
+    "coord_max_nm": "COORD_MAX_NM",
+    "home_source": "HOME_SOURCE",
+    "home_refresh_s": "HOME_REFRESH_S",
     "sample_rate": "SDR_SAMPLE_RATE",
     "gain": "SDR_GAIN",
     "ppm": "SDR_PPM",
     "device_index": "SDR_DEVICE_INDEX",
     "max_messages": "MAX_MESSAGES",
     "max_record_gb": "MAX_RECORD_GB",
+    "target_rms": "TARGET_RMS",
+    "max_norm_gain_db": "MAX_NORM_GAIN_DB",
+    "min_transcribe_quality": "MIN_TRANSCRIBE_QUALITY",
+    "thermal_sample_s": "THERMAL_SAMPLE_S",
+    "thermal_history_days": "THERMAL_HISTORY_DAYS",
+    "keep_above_quality": "KEEP_ABOVE_QUALITY",
+    "min_transcribe_s": "MIN_TRANSCRIBE_S",
+    "always_transcribe": "ALWAYS_TRANSCRIBE",
+    "transcribe_channels": "TRANSCRIBE_CHANNELS",
     "model": "MODEL_SIZE",
     "cpu_threads": "CPU_THREADS",
     "beam_size": "BEAM_SIZE",
     "temperatures": "WHISPER_TEMPERATURES",
+    "loop_retry_temperatures": "LOOP_RETRY_TEMPERATURES",
     "compression_ratio_threshold": "COMPRESSION_RATIO_THRESHOLD",
     "low_conf_avg_logprob": "LOW_CONF_AVG_LOGPROB",
     "low_conf_no_speech": "LOW_CONF_NO_SPEECH",
@@ -852,6 +1328,13 @@ def load_config(path):
     for key, name in RADIO_OVERRIDES.items():
         if key in cfg.get("radio", {}):
             globals()[name] = cfg["radio"][key]
+
+    # Renamed when the log moved to nautical miles. Convert rather than
+    # ignore, so an older config file does not silently lose its radius.
+    if "coord_max_miles" in cfg.get("radio", {}):
+        globals()["COORD_MAX_NM"] = float(cfg["radio"]["coord_max_miles"]) * 0.8689762
+        log.warning("coord_max_miles is deprecated; rename it to coord_max_nm "
+                    "(converted to %.0f nm)", COORD_MAX_NM)
 
     # Paths are resolved after base_dir so that setting only base_dir moves
     # everything, while audio_dir or db_path can still be pointed elsewhere --
@@ -1122,6 +1605,33 @@ def spectral_flatness(audio, sr=None):
     return float(np.median(vals)) if vals else None
 
 
+def transcribe_gate(channel, quality, duration_s):
+    """Why this clip should not be decoded, or None to go ahead.
+
+    Returns a reason string so the log and the web interface can say which
+    gate fired rather than leaving a silently empty transcript.
+    """
+    # Checked before always_transcribe: a channel outside the whitelist is
+    # not decoded even if it is also named there. Startup warns if the two
+    # lists disagree, because that combination is always a mistake.
+    if TRANSCRIBE_CHANNELS and channel not in TRANSCRIBE_CHANNELS:
+        return "channel not in transcribe_channels"
+    if channel in ALWAYS_TRANSCRIBE:
+        return None
+    if MIN_TRANSCRIBE_S > 0 and duration_s < MIN_TRANSCRIBE_S:
+        return "under %.1fs" % MIN_TRANSCRIBE_S
+    # quality is None, not 0, when the readability metric had no opinion -- a
+    # steady carrier has constant frame energy, so the loud-frame filter in
+    # spectral_flatness keeps nothing. Gating on that would silently drop
+    # every continuous transmission, so None always passes.
+    if (MIN_TRANSCRIBE_QUALITY > 0 and quality is not None
+            and quality < MIN_TRANSCRIBE_QUALITY):
+        # One decimal on the measured value: at %.0f a clip scoring 54.9
+        # prints as "readability 55 below 55", which reads as a bug.
+        return "readability %.1f below %.0f" % (quality, MIN_TRANSCRIBE_QUALITY)
+    return None
+
+
 def quality_score(flat):
     """Flatness mapped to 0-100, higher meaning more readable.
 
@@ -1141,6 +1651,32 @@ def soc_temperature():
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             return int(f.read().strip()) / 1000.0
     except (OSError, ValueError):
+        return None
+
+
+def fan_rpm():
+    """Fan speed in RPM, or None where there is no kernel-controlled fan.
+
+    The hwmon number is not stable across boots, so this globs rather than
+    hardcoding hwmon0. A case fan wired straight to 5 V has no entry here at
+    all, which is itself worth recording: it means the fan curve settings in
+    config.txt are doing nothing.
+    """
+    for path in glob.glob("/sys/devices/platform/cooling_fan/hwmon/"
+                          "hwmon*/fan1_input"):
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def load_average():
+    try:
+        with open("/proc/loadavg") as f:
+            return float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
         return None
 
 
@@ -1801,8 +2337,30 @@ class Calibrator:
     def update(self):
         if not self.refs:
             return
-        self.noise_samples.append(float(np.median([r.last_noise for r in self.refs])))
-        self.power_samples.append(float(np.median([r.last_power_db for r in self.refs])))
+        # Combine the reference channels in the direction a stray signal
+        # cannot corrupt, rather than by median.
+        #
+        # A reference frequency is supposed to be empty, and every reference
+        # is measuring the same thing, so they should agree. When they do not,
+        # the odd one out is the contaminated one -- and contamination always
+        # pushes in a known direction. On FM a carrier CAPTURES the
+        # discriminator and drives the noise metric toward zero, so the
+        # highest reading is the honest one. On AM a signal RAISES the
+        # measured power, so the lowest reading is.
+        #
+        # The median was letting a carrier on one of two references drag the
+        # calibration halfway to nonsense: with refs reading 0.87 and 0.05 the
+        # median of two is their mean, 0.46, which is below the open threshold
+        # the calibration is meant to be setting. Observed on 156.9875 in Long
+        # Beach, where the reference fired dozens of times an hour.
+        noise = [r.last_noise for r in self.refs]
+        power = [r.last_power_db for r in self.refs]
+        if self.mode == "am":
+            self.noise_samples.append(float(np.min(noise)))
+            self.power_samples.append(float(np.min(power)))
+        else:
+            self.noise_samples.append(float(np.max(noise)))
+            self.power_samples.append(float(np.median(power)))
         if len(self.noise_samples) < self._needed:
             return
 
@@ -1949,6 +2507,78 @@ CREATE INDEX IF NOT EXISTS idx_channel  ON messages(channel, started_at DESC);
 """
 
 
+# A permanent record, parallel to `messages` and never pruned.
+#
+# `messages` is the live log: capped at max_messages, and every row whose WAV
+# has gone is dropped at startup, which on tmpfs means the whole table after a
+# reboot. That is right for a log you play back and wrong for analysis -- two
+# days of gain experiments vanished before they could be compared.
+#
+# Rows are written here at INSERT and updated in place as the transcript and
+# timings arrive. Archiving at insert rather than at deletion is deliberate:
+# refresh.sh empties `messages` with raw SQL, outside this program, so anything
+# hooked to prune() or reconcile() would miss exactly the data a gain
+# experiment produces.
+#
+# No audio_path: the file is gone by the time this matters.
+#
+# The natural key is (started_at, channel). Message ids cannot be used --
+# SQLite restarts INTEGER PRIMARY KEY from 1 once a table is emptied, so ids
+# from different sessions collide.
+#
+# Cost is roughly half a kilobyte per message, so a few tens of megabytes a
+# year at this traffic.
+HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS history (
+    hid          INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel      TEXT    NOT NULL,
+    freq_hz      INTEGER,
+    started_at   TEXT    NOT NULL,
+    duration_s   REAL,
+    snr_db       REAL,
+    status       TEXT,
+    transcript   TEXT,
+    reject_reason TEXT,
+    quality      REAL,
+    gain_db      TEXT,
+    rtf          REAL,
+    soc_temp_c   REAL,
+    thermal_wait_s REAL,
+    preset       TEXT,
+    noise_floor_db REAL,
+    norm_gain    REAL,
+    peak_pre_limit REAL,
+    archived_at  TEXT    NOT NULL,
+    UNIQUE(started_at, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_started ON history(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hist_gain    ON history(gain_db);
+"""
+
+
+# Thermal time series, sampled on a fixed interval rather than per message.
+#
+# Per-message temperature is a biased sample: it only exists when traffic
+# happens, so a quiet hot hour and a busy hot hour look identical and a quiet
+# cool hour is invisible. A fixed cadence gives a series that can be plotted
+# against message rate, which is what separates "this cooler is worse" from
+# "that hour was busier".
+#
+# At the default 30 s that is 2,880 rows a day and about 20,000 a week, well
+# under a megabyte. Rows older than thermal_history_days are dropped on the
+# same schedule as message pruning.
+THERMAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS thermal (
+    ts       TEXT    PRIMARY KEY,
+    soc_c    REAL,
+    fan_rpm  INTEGER,
+    load1    REAL,
+    queued   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_thermal_ts ON thermal(ts DESC);
+"""
+
+
 # Columns added after the first release. Applied with ALTER TABLE on every
 # start so an existing database keeps working rather than needing a rebuild.
 MIGRATIONS = [
@@ -1962,6 +2592,8 @@ MIGRATIONS = [
     ("reject_reason",   "TEXT"),    # why the text was discarded, if it was
     ("rtf",             "REAL"),    # decode time over audio duration
     ("quality",         "REAL"),    # 0-100 readability, from spectral flatness
+    ("soc_temp_c",      "REAL"),    # SoC temperature when the message closed
+    ("thermal_wait_s",  "REAL"),    # how long the decode was held for heat
 ]
 
 
@@ -1975,10 +2607,17 @@ class Store:
         self._local = threading.local()
         with self._conn() as c:
             c.executescript(SCHEMA)
+            c.executescript(HISTORY_SCHEMA)
+            c.executescript(THERMAL_SCHEMA)
             have = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
             for name, kind in MIGRATIONS:
                 if name not in have:
                     c.execute(f"ALTER TABLE messages ADD COLUMN {name} {kind}")
+            n = c.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+            if n:
+                first = c.execute(
+                    "SELECT MIN(started_at) FROM history").fetchone()[0]
+                log.info("history holds %d message(s) since %s", n, first[:16])
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -1997,21 +2636,114 @@ class Store:
             cur = c.execute(
                 "INSERT INTO messages (channel, freq_hz, started_at, duration_s,"
                 " snr_db, audio_path, status, created_at, preset, noise_floor_db,"
-                " open_thresh, gain_db, peak_pre_limit, norm_gain, quality)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " open_thresh, gain_db, peak_pre_limit, norm_gain, quality,"
+                " soc_temp_c)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (msg.channel, msg.freq_hz, started_at.isoformat(),
                  msg.audio.size / AUDIO_RATE, msg.snr_db, audio_path,
                  "pending", datetime.now(timezone.utc).isoformat(),
                  ctx.get("preset"), ctx.get("noise_floor_db"),
                  ctx.get("open_thresh"), SDR_GAIN,
-                 msg.peak_db, msg.norm_gain, msg.quality),
+                 msg.peak_db, msg.norm_gain, msg.quality,
+                 ctx.get("soc_temp_c")),
             )
+        # Archived here rather than at deletion, so nothing is lost to prune,
+        # to reconcile after a reboot, or to a raw "delete from messages".
+        self._hist_new(msg, started_at, ctx)
         return cur.lastrowid
 
-    def set_status(self, row_id: int, status: str):
+    # --- history ----------------------------------------------------------
+    # Every write below is best-effort. A failure here must never cost a
+    # recording or a transcript: the live log is the product, history is the
+    # notebook, so errors are logged and swallowed.
+
+    def _hist_key(self, row_id):
+        """(started_at, channel) for a message row, or None if it is gone."""
+        r = self._conn().execute(
+            "SELECT started_at, channel FROM messages WHERE id=?",
+            (row_id,)).fetchone()
+        return (r[0], r[1]) if r else None
+
+    def _hist_new(self, msg, started_at, ctx):
+        c = self._conn()
+        try:
+            with c:
+                c.execute(
+                    "INSERT OR IGNORE INTO history (channel, freq_hz,"
+                    " started_at, duration_s, snr_db, status, quality,"
+                    " gain_db, soc_temp_c, preset, noise_floor_db, norm_gain,"
+                    " peak_pre_limit, archived_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (msg.channel, msg.freq_hz, started_at.isoformat(),
+                     msg.audio.size / AUDIO_RATE, msg.snr_db, "pending",
+                     msg.quality, SDR_GAIN, ctx.get("soc_temp_c"),
+                     ctx.get("preset"), ctx.get("noise_floor_db"),
+                     msg.norm_gain, msg.peak_db,
+                     datetime.now(timezone.utc).isoformat()))
+        except sqlite3.Error as e:
+            log.warning("could not archive %s to history: %s", msg.channel, e)
+
+    def _hist_update(self, row_id, **fields):
+        """Patch the history row belonging to a message id."""
+        key = self._hist_key(row_id)
+        if key is None or not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields)
+        c = self._conn()
+        try:
+            with c:
+                c.execute(f"UPDATE history SET {sets}"
+                          " WHERE started_at=? AND channel=?",
+                          (*fields.values(), key[0], key[1]))
+        except sqlite3.Error as e:
+            log.warning("could not update history row %s: %s", row_id, e)
+
+    def add_thermal(self, soc_c, fan, load1, queued):
+        c = self._conn()
+        try:
+            with c:
+                c.execute("INSERT OR REPLACE INTO thermal"
+                          " (ts, soc_c, fan_rpm, load1, queued)"
+                          " VALUES (?,?,?,?,?)",
+                          (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           soc_c, fan, load1, queued))
+        except sqlite3.Error as e:
+            log.debug("thermal sample not stored: %s", e)
+
+    def prune_thermal(self, days: float):
+        """Drop samples older than `days`. Cheap: an index scan and a delete."""
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=days)).isoformat(timespec="seconds")
+        c = self._conn()
+        try:
+            with c:
+                cur = c.execute("DELETE FROM thermal WHERE ts < ?", (cutoff,))
+                return cur.rowcount
+        except sqlite3.Error as e:
+            log.debug("thermal prune failed: %s", e)
+            return 0
+
+    def set_status(self, row_id: int, status: str, reason: str = None):
         c = self._conn()
         with c:
-            c.execute("UPDATE messages SET status=? WHERE id=?", (status, row_id))
+            if reason is None:
+                c.execute("UPDATE messages SET status=? WHERE id=?",
+                          (status, row_id))
+            else:
+                c.execute("UPDATE messages SET status=?, reject_reason=?"
+                          " WHERE id=?", (status, reason, row_id))
+        self._hist_update(row_id, status=status, **(
+            {} if reason is None else {"reject_reason": reason}))
+
+    def set_thermal_wait(self, row_id: int, seconds: float):
+        """Seconds this decode was held waiting for the SoC to cool."""
+        c = self._conn()
+        with c:
+            c.execute("UPDATE messages SET thermal_wait_s=? WHERE id=?",
+                      (float(seconds), row_id))
+        self._hist_update(row_id, thermal_wait_s=float(seconds))
 
     def update_transcript(self, row_id: int, text: str, status: str,
                           avg_logprob, no_speech, raw=None, reason=None, rtf=None):
@@ -2022,19 +2754,22 @@ class Store:
                 " no_speech=?, raw_transcript=?, reject_reason=?, rtf=? WHERE id=?",
                 (text, status, avg_logprob, no_speech, raw, reason, rtf, row_id),
             )
+        self._hist_update(row_id, transcript=text, status=status,
+                          reject_reason=reason, rtf=rtf)
 
-    # Retention is by value, not purely by age. With a fixed number of slots,
-    # deleting strictly oldest-first lets a burst of noise-triggered junk push
-    # out messages worth reading. Ranking by transcription outcome first and
-    # recency second means the junk is evicted before anything useful, so a
-    # weak message can be kept rather than discarded at capture time.
-    KEEP_RANK = ("CASE status "
-                 "WHEN 'empty' THEN 0 "      # Whisper found no speech
-                 "WHEN 'error' THEN 0 "
-                 "WHEN 'low' THEN 1 "        # transcribed, low confidence
-                 "WHEN 'skipped' THEN 1 "    # diagnostic channel
-                 "WHEN 'backlog' THEN 2 "    # audio kept, never transcribed
-                 "ELSE 3 END")               # 'ok' and 'pending'
+    # Retention is strictly oldest-first, by id. Nothing else.
+    #
+    # This used to rank rows by transcription outcome so that a burst of
+    # noise-triggered junk could not push out messages worth reading. That was
+    # a mistake: status is assigned after the row is inserted, so a message
+    # that arrived as 'pending' (top rank) and came back 'empty' or 'low'
+    # became the lowest-ranked row in the table and was deleted by the very
+    # next prune -- a minute after it appeared in the log, while hundreds of
+    # older rows survived. Messages vanished from under the operator.
+    #
+    # A log the operator cannot trust to hold what it just showed is worse
+    # than one that occasionally spends a slot on noise. Age is the only key
+    # here, and the id is the only clock that never disagrees with itself.
 
     def reconcile(self):
         """Drop rows whose recording has gone.
@@ -2054,12 +2789,19 @@ class Store:
                      "reboot if the recordings are on tmpfs)", len(missing))
         return len(missing)
 
-    def prune(self, keep: int = MAX_MESSAGES):
+    def prune(self, keep: int = None):
+        """Keep the newest `keep` rows by id and delete the rest.
+
+        Oldest-first, always, with no consideration of status or transcription
+        outcome. A message that has been shown to the operator stays in the log
+        until it is genuinely the oldest thing there.
+        """
+        keep = MAX_MESSAGES if keep is None else keep
         c = self._conn()
         rows = c.execute(
-            f"SELECT id, audio_path FROM messages "
-            f"ORDER BY {self.KEEP_RANK} DESC, id DESC LIMIT -1 OFFSET ?",
-            (keep,),
+            "SELECT id, audio_path FROM messages "
+            "ORDER BY id DESC LIMIT -1 OFFSET ?",
+            (max(int(keep), 1),),
         ).fetchall()
         for row_id, path in rows:
             try:
@@ -2247,7 +2989,9 @@ class Transcriber(threading.Thread):
                 break
             row_id, path = item
             try:
-                self._wait_if_hot()
+                waited = self._wait_if_hot()
+                if waited > 0:
+                    self.store.set_thermal_wait(row_id, waited)
                 self._transcribe(row_id, path)
             except Exception:
                 log.exception("transcription failed for row %s", row_id)
@@ -2270,12 +3014,57 @@ class Transcriber(threading.Thread):
             self._no_cap = True
             return self._run(row_id, path)
 
+    def _retry_loop(self, audio, sr, row_id):
+        """Re-decode a clip whose first pass collapsed into a repetition loop.
+
+        Greedy decoding at a single temperature has no way out of a loop. This
+        runs the fallback ladder for just this clip, with a tighter n-gram
+        block, and accepts the result only if it is not itself a loop. Returns
+        "" when nothing better came back, leaving the caller to discard as
+        before.
+        """
+        if not LOOP_RETRY_TEMPERATURES:
+            return ""
+        cap = int(min(len(audio) / sr, WHISPER_WINDOW_S) * MAX_TOKENS_PER_SECOND) + 16
+        extra = {} if getattr(self, "_no_cap", False) else {"max_new_tokens": cap}
+        try:
+            segments, _info = self.model.transcribe(
+                audio,
+                **extra,
+                # Beam search is materially better at avoiding a loop than
+                # greedy decoding, and this path is rare enough to afford it.
+                beam_size=max(BEAM_SIZE, 2),
+                temperature=LOOP_RETRY_TEMPERATURES,
+                compression_ratio_threshold=COMPRESSION_RATIO_THRESHOLD,
+                log_prob_threshold=LOG_PROB_THRESHOLD,
+                no_speech_threshold=NO_SPEECH_THRESHOLD,
+                no_repeat_ngram_size=3,
+                condition_on_previous_text=False,
+                initial_prompt=self.prompt,
+                suppress_tokens=getattr(self, "suppress", [-1]),
+                vad_filter=VAD_FILTER,
+                vad_parameters=dict(min_silence_duration_ms=500,
+                                    speech_pad_ms=300),
+            )
+            out = strip_annotations(
+                " ".join(s.text.strip() for s in segments).strip())
+        except Exception as e:
+            log.warning("row %d: loop re-decode failed: %s", row_id, e)
+            return ""
+        # Only accept a real improvement: not empty, not another loop, and
+        # more than a single stray word.
+        if not out or looks_like_loop(out):
+            return ""
+        if len(re.findall(r"[a-z0-9']+", out.lower())) < 2:
+            return ""
+        return out
+
     def _run(self, row_id: int, path: str):
         audio, sr = sf.read(path, dtype="float32")
         t0 = time.time()
         # Bound the output to what the clip could plausibly contain. This is
         # what stops a runaway loop costing minutes on a four-second recording.
-        cap = int(len(audio) / sr * MAX_TOKENS_PER_SECOND) + 16
+        cap = int(min(len(audio) / sr, WHISPER_WINDOW_S) * MAX_TOKENS_PER_SECOND) + 16
         extra = {} if getattr(self, "_no_cap", False) else {"max_new_tokens": cap}
         segments, _info = self.model.transcribe(
             audio,
@@ -2344,6 +3133,15 @@ class Transcriber(threading.Thread):
             # Two words is enough: "Roger, standing by" is a complete and
             # useful transmission, and radio traffic is terse by nature.
             if cut and len(re.findall(r"[a-z0-9']+", rest.lower())) >= 2:
+                # The chain below is elif, so nothing else will look at this
+                # again. Whisper's outro is routinely followed by a token
+                # loop, and that loop is not subtitle boilerplate -- without
+                # this it would survive into the log as the transcript.
+                if looks_like_loop(rest):
+                    shorter, loop_cut = trim_trailing_loop(rest)
+                    if loop_cut and len(
+                            re.findall(r"[a-z0-9']+", shorter.lower())) >= 2:
+                        rest = shorter
                 log.info("row %d: removed subtitle boilerplate, keeping %r",
                          row_id, rest[:70])
                 reason = "subtitle boilerplate removed from the end"
@@ -2404,9 +3202,19 @@ class Transcriber(threading.Thread):
                 status = "low"
                 reason = f"repetition kept, audio readable at {readable:.0f}%"
             else:
-                log.info("row %d discarded as a decoder loop: %r",
-                         row_id, text[:60])
-                status, text, reason = "empty", "", "decoder repetition loop"
+                # Before throwing the transmission away, give the decoder the
+                # escape route the temperature ladder would normally provide.
+                salvaged = self._retry_loop(audio, sr, row_id)
+                if salvaged:
+                    log.info("row %d: re-decode broke the loop %r -> %r",
+                             row_id, text[:40], salvaged[:60])
+                    status, reason = "low", (
+                        f"re-decoded after a loop in {text[:40]!r}")
+                    text = salvaged
+                else:
+                    log.info("row %d discarded as a decoder loop: %r",
+                             row_id, text[:60])
+                    status, text, reason = "empty", "", "decoder repetition loop"
 
         if text and DISTRESS_RE.search(text):
             log.warning("row %d on %s contains distress vocabulary -- LISTEN to "
@@ -2445,6 +3253,74 @@ class Watchkeeper:
         self.channels = preset["channels"]
         self.mode = preset.get("mode", "nfm")
         self.voice_channels = {c.name for c in self.channels if c.voice}
+        self.gated = 0             # decodes skipped by the pre-transcribe gate
+
+        # A typo here fails silently and in the worst possible direction: the
+        # channel stays gated and nobody finds out until a distress call is
+        # not transcribed. Names must match a configured channel exactly.
+        # An inverted pair is not an error the program can detect at runtime:
+        # the guard simply never fires, and transmissions are discarded for
+        # repetition that was real. Say so at startup instead.
+        if 0 < KEEP_ABOVE_QUALITY <= MIN_TRANSCRIBE_QUALITY:
+            log.warning("keep_above_quality (%.0f) is not above "
+                        "min_transcribe_quality (%.0f), so the repetition "
+                        "guard can never fire -- anything readable enough to "
+                        "reach the decoder is already above it. Raise the "
+                        "first or lower the second.",
+                        KEEP_ABOVE_QUALITY, MIN_TRANSCRIBE_QUALITY)
+
+        # The token cap is applied PER 30-SECOND ENCODER WINDOW and
+        # faster-whisper raises ValueError rather than clamping past the
+        # model's 448-token context. Above 14 tokens/second every single
+        # message fails, which is silent except in the journal.
+        _cap = int(WHISPER_WINDOW_S * MAX_TOKENS_PER_SECOND) + 16
+        if _cap > 448:
+            log.error("max_tokens_per_second=%g gives a per-window cap of %d, "
+                      "over Whisper's 448-token context. EVERY decode will "
+                      "fail with ValueError. Maximum usable value is %d.",
+                      MAX_TOKENS_PER_SECOND, _cap,
+                      int((448 - 16) / WHISPER_WINDOW_S))
+        elif _cap > 400:
+            log.warning("max_tokens_per_second=%g gives a per-window cap of "
+                        "%d, close to Whisper's 448-token limit.",
+                        MAX_TOKENS_PER_SECOND, _cap)
+
+        names = {c.name for c in self.channels}
+        if TRANSCRIBE_CHANNELS:
+            missing = [n for n in TRANSCRIBE_CHANNELS if n not in names]
+            if missing:
+                log.warning("transcribe_channels names no channel in this "
+                            "preset: %s -- check the spelling against %s",
+                            ", ".join(repr(n) for n in missing),
+                            ", ".join(repr(c.name) for c in self.channels))
+            excluded = sorted(n for n in names
+                              if n not in TRANSCRIBE_CHANNELS
+                              and not any(c.name == n and c.role != "voice"
+                                          for c in self.channels))
+            log.info("decoder limited to: %s", ", ".join(TRANSCRIBE_CHANNELS))
+            if excluded:
+                log.info("recorded but NOT transcribed: %s "
+                         "(audio is kept and playable)", ", ".join(excluded))
+            contradiction = [n for n in ALWAYS_TRANSCRIBE
+                             if n not in TRANSCRIBE_CHANNELS]
+            if contradiction:
+                log.warning("always_transcribe lists %s, which is not in "
+                            "transcribe_channels -- the whitelist wins and "
+                            "these are NOT decoded. Add them to "
+                            "transcribe_channels or remove them here.",
+                            ", ".join(repr(n) for n in contradiction))
+
+        unknown = [n for n in ALWAYS_TRANSCRIBE
+                   if n not in {c.name for c in self.channels}]
+        if unknown:
+            log.warning("always_transcribe names no channel in this preset: "
+                        "%s -- these are NOT exempt from the transcription "
+                        "gate. Configured channels: %s",
+                        ", ".join(repr(n) for n in unknown),
+                        ", ".join(repr(c.name) for c in self.channels))
+        elif ALWAYS_TRANSCRIBE:
+            log.info("always transcribed regardless of readability: %s",
+                     ", ".join(ALWAYS_TRANSCRIBE))
 
         os.makedirs(AUDIO_DIR, exist_ok=True)
         os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
@@ -2513,6 +3389,7 @@ class Watchkeeper:
         sample_index = 0
         ran_clean = False
         last_prune = time.time()
+        last_thermal = 0.0
         last_monitor = 0.0
 
         log.info("watching %s (%s): %s", self.preset_name, self.mode.upper(),
@@ -2590,7 +3467,16 @@ class Watchkeeper:
 
                 if not self.monitor and time.time() - last_prune > 60:
                     self.store.prune()
+                    self.store.prune_thermal(THERMAL_HISTORY_DAYS)
                     last_prune = time.time()
+                # Sampled here rather than on a thread: this loop already runs
+                # continuously, and a sample taken from the thread doing the
+                # work is a sample of the state that work is producing.
+                if (THERMAL_SAMPLE_S > 0
+                        and time.time() - last_thermal >= THERMAL_SAMPLE_S):
+                    self.store.add_thermal(soc_temperature(), fan_rpm(),
+                                           load_average(), self.jobs.qsize())
+                    last_thermal = time.time()
         finally:
             source.stop()
             if self.monitor:
@@ -2610,8 +3496,20 @@ class Watchkeeper:
         log.info("=== monitor summary: %s (%s), %.0f s ===",
                  self.preset_name, self.mode.upper(), secs)
         if cal.calibrated:
-            log.info("noise floor %.1f dBFS from %d reference channel(s)",
-                     cal.idle_noise, len(cal.refs))
+            # The units differ by mode and the label has to follow. In AM the
+            # reference figure is a power floor in dBFS. In FM it is the
+            # discriminator noise metric -- a dimensionless ratio, about 0.86
+            # idle and near zero with a carrier -- which is deliberately
+            # amplitude-independent, so it neither is nor tracks a dBFS level.
+            # Printing "0.9 dBFS" was nonsense and made it look as though a
+            # gain sweep had produced identical readings at every gain.
+            if self.mode == "am":
+                log.info("noise floor %.1f dBFS from %d reference channel(s)",
+                         cal.idle_noise, len(cal.refs))
+            else:
+                log.info("reference noise metric %.2f from %d reference "
+                         "channel(s) (dimensionless; does not vary with gain)",
+                         cal.idle_noise, len(cal.refs))
         else:
             log.info("calibration never completed")
         if self.mode == "am" and chan.receivers:
@@ -2620,6 +3518,10 @@ class Watchkeeper:
                      "(absolute guard %.1f)", o, c, AM_SQUELCH_DBFS)
         if MIN_SNR_DB > 0:
             log.info("discarding messages below %.0f dB mean SNR", MIN_SNR_DB)
+        if MIN_TRANSCRIBE_QUALITY > 0 or MIN_TRANSCRIBE_S > 0:
+            log.info("pre-transcribe gate: readability >= %.0f, length >= %.1fs"
+                     " -- %d decode(s) skipped, all audio kept",
+                     MIN_TRANSCRIBE_QUALITY, MIN_TRANSCRIBE_S, self.gated)
         log.info("%-26s %8s %8s %7s %7s %7s", "channel", "median", "peak",
                  "opens", "short", "weak")
         for rx in chan.receivers:
@@ -2643,6 +3545,10 @@ class Watchkeeper:
             "preset": self.preset_name,
             "noise_floor_db": self._floor_db,
             "open_thresh": self._open_thresh,
+            # One sysfs read. Recorded per message so the relationship between
+            # heat, decode speed and thermal holds can be queried later rather
+            # than inferred from a journal window and comparable traffic.
+            "soc_temp_c": soc_temperature(),
         })
 
         dur = msg.audio.size / AUDIO_RATE
@@ -2651,6 +3557,16 @@ class Watchkeeper:
 
         if msg.channel not in self.voice_channels:
             self.store.set_status(row_id, "skipped")
+            return
+
+        # Cheapest possible place for this: the readability score was computed
+        # when the message closed, so the gate costs a comparison and saves a
+        # whole encoder pass.
+        gate = transcribe_gate(msg.channel, msg.quality, dur)
+        if gate is not None:
+            self.gated += 1
+            self.store.set_status(row_id, "gated", reason=gate)
+            log.info("row %d not transcribed: %s (audio kept)", row_id, gate)
             return
         for old_id, _ in self.jobs.put((row_id, path)):
             # Evicted because newer traffic arrived. The recording is intact;

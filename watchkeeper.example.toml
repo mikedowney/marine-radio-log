@@ -32,17 +32,31 @@
 #  The Pi runs from a microSD card, and the recordings are essentially all of
 #  the write traffic: about 1.25 MB/min of audio against roughly 10 KB/min of
 #  database. Putting just the audio on tmpfs removes around 99% of the writes
-#  for about 12 MB of RAM at typical message length.
+#  for the cost of some RAM.
 #
-#  The cost is that recordings do not survive a reboot. With only 100 messages
-#  retained -- half an hour of traffic -- that is usually an easy trade. The
-#  database stays on the card either way, and any row whose WAV has gone is
-#  dropped at startup so the log never lists something it cannot play.
+#  The cost is that recordings do not survive a reboot. The database stays on
+#  the card either way, and any row whose WAV has gone is dropped at startup,
+#  so the log never lists something it cannot play.
 #
-#  To do it, uncomment audio_dir below and add to /etc/fstab:
+#  THIS IS ALREADY SET UP. audio_dir stays commented out below because the
+#  default (base_dir/audio) is exactly where the mount is. The live fstab line
+#  on watchkeeper-pi is:
 #
 #    tmpfs /home/pi/watchkeeper/audio tmpfs \
-#          defaults,noatime,size=256M,uid=1000,gid=1000,mode=0755 0 0
+#          defaults,nofail,noatime,size=768M,uid=1000,gid=1000,mode=0755 0 0
+#
+#  nofail matters: without it a mount that fails to come up blocks boot on a
+#  headless machine. With it, boot continues and the writes land on the card
+#  instead -- which the receiver warns about at startup, so watch for that
+#  line rather than assuming the mount is there.
+#
+#  SIZING. Measured 3 Oct at max_messages = 1000: 1000 files, 240 MB, about
+#  245 KB each (7.6 s average at 16 kHz / 16-bit = 32 KB/s). That is steady
+#  state, not a point on the way up -- the ring is full, so 240 MB is the
+#  ceiling. 768M is 32% used and holds roughly 2500 recordings, so
+#  max_messages has room to grow to about 2000 before the mount constrains it.
+#
+#  Check it with:   df -h ~/watchkeeper/audio
 #
 #  A USB SSD is the other answer: keeps the recordings, removes the wear
 #  question entirely, and costs a port.
@@ -55,31 +69,97 @@ base_dir  = "~/watchkeeper"
 
 [radio]
 station_name = "Radio Log"   # title of the web page and exported transcripts
+
+# Where the receiver is, in decimal degrees. The Coast Guard reads out
+# positions constantly; these decide which of them are near enough to be worth
+# a map link next to the message. Comment both out to turn position links off.
+# A rough figure is fine -- it only has to be right to within a few miles.
+home_lat     = 37.8060   # set this to where the receiver is
+home_lon     = -122.4659
+coord_max_nm = 500        # nautical miles; positions further off are ignored
+
+# Poll the boat's own GPS instead of editing the figures above by hand. Signal
+# K on the Cerbo serves exactly the shape this expects. A live fix always wins;
+# home_lat/home_lon stay as the fallback for when the Cerbo is off or the
+# network is down, and the last good fix is kept rather than discarded.
+home_source  = "http://cerbo.local:3000/signalk/v1/api/vessels/self/navigation/position"
+home_refresh_s = 300       # seconds between polls; 15 is the floor
 sample_rate  = 2048000     # 2.048 MSPS. Lowering to 1024000 halves the span.
-gain         = "36.4"      # dB. "0" selects the tuner's own AGC.
-                           # Lower this if a strong in-band signal approaches
-                           # full scale; an overloaded front end raises the
-                           # noise floor on every channel.
+gain         = "15.7"      # dB. "0" selects the tuner's own AGC, NOT zero gain.
+                           # Was 36.4, chosen for the old cabin dipole. On the
+                           # masthead antenna 36.4 saturated the front end in
+                           # 17 minutes out of 30; 25 does it in 8, with a
+                           # noise floor 6 dB better. See the survey note under
+                           # [preset.boat]. Then 25, 22.9, 16.6, 14.4, and
+                           # now 15.7. When Ch14 (156.700, LA/LB VTS) keys up
+                           # the whole 2 MHz window fills with a comb of false
+                           # carriers on a 200 kHz spacing, each carrying real
+                           # audible voice -- third-order intermodulation in
+                           # the R828D's own LNA and mixer, which is what puts
+                           # one transmission on several channels at once. It
+                           # is not the channelizer (67 dB rejection measured
+                           # at 200 kHz) and not ADC clipping (peaks sit 45 dB
+                           # below full scale).
+                           #
+                           # Set it by raising the gain until bleedover
+                           # appears and backing off one step: the comb is
+                           # visible on a spectrum display long before it is
+                           # audible in a transcript. bleedover.sql scores it
+                           # from the log, grouped by this value.
+                           #
+                           # 14.4 was measured clean on 3 Oct: 2 coincident
+                           # pairs in 1000 messages (0.2%), both at 300/350 kHz
+                           # separation rather than the 200 kHz comb spacing,
+                           # and both 1.3 s -- two people keying up at once,
+                           # not intermod. Stepped back up to 15.7 to recover
+                           # sensitivity, since the floor is ADC-limited and
+                           # does NOT fall with gain: reference power held at
+                           # -65.8/-65.9 dB across 16.6 -> 15.7 -> 14.4, so
+                           # every step down is pure loss. 16.6 is the rung
+                           # where the comb was last seen.
+                           # Gain Settings are available in discrete steps
+                           # 0.0   0.9   1.4   2.7   3.7   7.7   8.7  12.5  14.4  15.7
+                           # 16.6  19.7  20.7  22.9  25.4  28.0  29.7  32.8  33.8  36.4
+                           # 37.2  38.6  40.2  42.1  43.4  43.9  44.5  48.0  49.6
 ppm          = "0"         # The RTL-SDR Blog V4 has a 1 PPM TCXO, so 0 is fine.
 device_index = "0"
-max_messages = 100         # Recordings kept, deleted with their database row.
-                           # Eviction is by value, not purely by age: messages
-                           # Whisper found no speech in go first, then
-                           # low-confidence ones, then oldest. A burst of junk
-                           # cannot push out something worth reading.
+max_messages = 2000        # Recordings kept, deleted with their database row.
+                           # Eviction is strictly oldest-first by message id.
+                           # Nothing is ever dropped for transcribing badly --
+                           # a message that has appeared in the log stays there
+                           # until it is genuinely the oldest thing in it.
 max_record_gb = 8.0        # Cap on --record raw I/Q files.
 # --- Transcription ---------------------------------------------------------
-# The encoder always processes one padded 30-second window, so a 2-second
-# message costs about the same as a 25-second one. What varies between clips is
-# decoder work, and the two settings below are what control it.
-model        = "small.en"   # "base.en" is roughly 3x faster and noticeably
+# The encoder processes a padded 30-second window at a time, so a 2-second
+# message costs about the same as a 25-second one. Longer clips are not one
+# bigger pass: faster-whisper slides that same 30-second window along, so a
+# 90-second bulletin is three windows, not a 90-second encode. What varies
+# between clips is decoder work, and the two settings below are what control
+# it.
+model        = "medium.en"   # "base.en" is roughly 3x faster and noticeably
                             # less accurate. At the 10-14 dB signal-to-noise
                             # these captures actually have, keeping up is worth
                             # more than the accuracy difference.
-cpu_threads  = 2            # Was 3. Marine traffic is sparse enough that the
-                            # third thread bought little, and peak power is what
-                            # heat is. The transcriber is niced below the DSP,
-                            # so it yields rather than starving capture.
+cpu_threads  = 2            # Still 2, but no longer for the reason given here
+                            # before. It was dropped from 3 when peak power was
+                            # the binding constraint on the old cooler. With the
+                            # new one the SoC peaks at 70 C against a 79 C pause
+                            # threshold, so the thermal argument no longer holds
+                            # and 3 is worth testing.
+                            #
+                            # IF YOU RAISE IT, RAISE OMP_NUM_THREADS TO MATCH.
+                            # The systemd unit pins OMP_NUM_THREADS=2 and
+                            # OPENBLAS_NUM_THREADS=1 specifically to stop
+                            # OpenMP and BLAS spawning a thread per core on top
+                            # of whatever this says. Changing one and not the
+                            # other gives a worse result than either value on
+                            # its own.
+                            #
+                            # Four cores total. The transcriber is niced to +10
+                            # below the DSP, so it yields rather than starving
+                            # capture -- but that protects the DSP's share of
+                            # CPU, not its latency. At 3 threads the channelizer
+                            # and everything else share one core.
 beam_size    = 1            # Greedy. Roughly half the decoder work of 2, for a
                             # small accuracy cost that is hard to see at the
                             # 10-20 dB signal-to-noise these captures have.
@@ -89,6 +169,12 @@ temperatures = [0.0]        # Each extra entry is a COMPLETE re-decode, tried
                             # cost three full passes -- the source of the rtf=6
                             # and rtf=9 outliers. One entry caps the worst case.
 compression_ratio_threshold = 2.4
+# Used only to re-decode a clip whose first pass collapsed into a repetition
+# loop, which is otherwise terminal when temperatures has a single entry: the
+# ladder above is what normally breaks a loop. Costs one extra pass on clips
+# that would be discarded whole, and nothing at all on everything else.
+# Set to [] to disable and go back to discarding them.
+loop_retry_temperatures = []
 
 # How readily a transcript is marked "(unclear)" in the log rather than shown
 # as fact. Whisper reports its own confidence per segment; these are where the
@@ -100,17 +186,48 @@ low_conf_no_speech   = 0.6
 
 
 # ---------------------------------------------------------------------
-#  AVIATION AM  --  Southern California, lower approach/ground block
+#  Still [radio]: settings that apply to every preset
 # ---------------------------------------------------------------------
-# A note on the prompt below: the phonetic alphabet is deliberately NOT in it.
-# initial_prompt conditions the decoder on text as though it preceded the audio,
-# so listing vocabulary makes the model likelier to emit those words when it
-# cannot hear clearly. A confidently hallucinated "Alpha Bravo" reads as real
-# and cannot be spotted; a garbled "B3OR" is visibly wrong. For a log meant to
-# be trusted at a glance, obvious failure beats plausible invention.
+#  EVERYTHING DOWN TO THE FIRST [preset.*] HEADER IS GLOBAL. The keys below
+#  are read from [radio] and apply to all presets. Do not insert a [preset.*]
+#  header above them -- the gate and output level would silently become
+#  scoped to that preset, and the boat would stop gating.
+
+# --- Output level ----------------------------------------------------------
+# MOVE THESE TWO TOGETHER. Raising target_rms alone makes quiet clips
+# relatively worse: they are the ones already pinned at max_norm_gain_db.
+target_rms       = 0.2     # ~ -14 dBFS RMS. 0.1 is ~ -20 dBFS.
+max_norm_gain_db = 26.0    # ceiling on the lift applied to a quiet clip
+
+# --- Pre-transcription gate ------------------------------------------------
+# The encoder pads every window to 30 seconds, so a 1-second clip costs nearly
+# as much to decode as a 25-second one. Skipping the hopeless ones is the
+# cheapest heat saving available.
+#
+# THE AUDIO IS ALWAYS KEPT. Only the decode is skipped: the row stays in the
+# log marked "not transcribed", and the WAV is still playable.
+#
+# 55 was validated by listening over a 100-message log on 26 Sep: everything
+# the gate rejected was static, everything above it was intelligible.
+min_transcribe_quality = 55.0   # 0 disables
+min_transcribe_s       = 2.0    # mic-pop cutoff; 0 disables
+always_transcribe      = ["Ch16 Distress", "Ch22A USCG Info"]
+
+# Readability at or above which a transcript is never discarded outright, only
+# trimmed -- the guard that stops the repetition filter throwing away a station
+# that identified itself three times. MUST stay above min_transcribe_quality
+# or it is dead code; the receiver warns at startup if they are inverted.
+keep_above_quality     = 60.0
+[preset.socal_low]
+# A note on the prompt further down: the phonetic alphabet is deliberately NOT
+# in it. initial_prompt conditions the decoder on text as though it preceded
+# the audio, so listing vocabulary makes the model likelier to emit those words
+# when it cannot hear clearly. A confidently hallucinated "Alpha Bravo" reads
+# as real and cannot be spotted; a garbled "B3OR" is visibly wrong. For a log
+# meant to be trusted at a glance, obvious failure beats plausible invention.
 # bench_whisper.py can measure this if you want to revisit it: it counts
 # phonetic words emitted and reports them against WER.
-[preset.socal_low]
+#
 # Re-centred from 125.200 after dropping Palm Springs and Joshua Control, which
 # produced nothing over several sessions. Everything now sits within +/- 525 kHz
 # instead of +/- 900, clear of the tuner's rolloff.
@@ -245,21 +362,17 @@ max_message_s       = 30.0
 min_snr_db          = 0.0    # deliberately off: on a distress channel a weak,
                              # garbled transmission may be the one that matters
 
-# NO distress vocabulary in this prompt, deliberately. initial_prompt
-# conditions the decoder on the text as though it preceded the audio, so
-# listing "mayday" and "securite" makes the model reach for them when it cannot
-# hear clearly. That produced a transcript reading "Securite securite, vessel
-# mayday, this is the United States Coast..." on four seconds of noise -- a
-# fabricated distress call, which is the worst output this program could make.
+# NO PROMPT ON MARINE PRESETS, deliberately. initial_prompt conditions the
+# decoder on text as though it preceded the audio, which does not merely make
+# hallucination likelier -- it makes it PLAUSIBLE. Unprompted, Whisper invents
+# generic filler that the subtitle and loop filters catch. Prompted, it invents
+# fluent marine phraseology that nothing can distinguish from real traffic.
 #
-# The model knows these words without priming; the prompt only biases it toward
-# emitting them under uncertainty. Operational vocabulary stays, because being
-# wrong about a channel number is cheap and being wrong about a mayday is not.
-# No prompt. initial_prompt conditions the decoder on text as though it
-# preceded the audio, which does not merely make hallucination likelier -- it
-# makes it PLAUSIBLE. Unprompted, Whisper invents generic filler that the
-# subtitle and loop filters catch. Prompted, it invents fluent marine
-# phraseology that nothing can distinguish from real traffic.
+# The earlier wording listed "mayday" and "securite" and produced a transcript
+# reading "Securite securite, vessel mayday, this is the United States Coast..."
+# on four seconds of noise -- a fabricated distress call, which is the worst
+# output this program could make. The model knows those words without priming;
+# the prompt only biased it toward reaching for them under uncertainty.
 #
 # A poorly transcribed real transmission is recoverable: the audio is kept and
 # the text is marked unclear. A fabricated one that reads correctly is not.
@@ -310,35 +423,89 @@ channels = [
 #  -- but the signals gained far more than the floor rose.
 #
 #  Centre is 37.5 kHz clear of every channel and off the 25 kHz grid. Worst
-#  offset 237.5 kHz, comfortably inside the flat region.
+#  offset is 725 kHz -- ref-b at 157.4875, moved out there on 25 Sep so the
+#  antenna alarm sees both ends of the window. That is inside the +/- 800 kHz
+#  guidance but no longer in the flat region, so ref-b sits on the tuner's
+#  rolloff and reads a little low in absolute terms. Fine for the alarm, which
+#  watches for a step change, but do not compare ref-a and ref-b levels to
+#  each other. The voice channels are all within 337.5 kHz.
 [preset.boat]
 center_hz = 156762500
 mode      = "nfm"
 
 fm_open_noise       = 0.55
 fm_close_noise      = 0.75
-fm_split_silence_s  = 1.2
-fm_target_message_s = 10.0
-max_message_s       = 30.0
+fm_split_silence_s  = 2.0
+fm_target_message_s = 60.0
+max_message_s       = 90.0
 min_snr_db          = 0.0
 carrier_tail_keep_s = 0.05
+
+# transcribe_backlog is deliberately not set here: the program default is 12,
+# which is the value wanted. Set it explicitly if that default ever changes.
 
 vad_filter          = false
 no_speech_threshold = 0.8
 log_prob_threshold  = -1.5
 fm_audio_hi_hz      = 3000
-max_tokens_per_second       = 8
+
+# Cap on decoder output, in tokens per second of audio -- the hard stop on a
+# runaway repetition loop. Speech is four or five; eight is generous.
+#
+# DO NOT RAISE THIS ABOVE 14. The cap handed to the decoder is
+# 30 * max_tokens_per_second + 16, against Whisper's 448-token context, and
+# faster-whisper raises ValueError rather than clamping when it is exceeded.
+# At 15 that is 466 and EVERY message fails to transcribe.
+#
+# This bit once already: the cap used to be scaled by clip length rather than
+# window length, so when max_message_s went from 30 to 90 every bulletin over
+# ~54 s asked for more than 448 tokens and died with "transcription failed"
+# while short traffic kept working. Fixed in watchkeeper.py on 3 Oct by
+# clamping to the 30 s window (WHISPER_WINDOW_S). max_new_tokens is applied
+# per encoder window, not per clip, which is why window length is the right
+# scale.
+max_tokens_per_second       = 5
 compression_ratio_threshold = 2.4
 temperatures                = [0.0]
 
-# Thermal governor. The Pi 5 starts pulling clocks back around 80 C and this
-# one has a HAT sitting over the SoC, so transcription alone will hold it at
-# the limit. Waiting before a decode costs latency, which is nearly free --
-# traffic is sparse and the log gets read after the fact -- while throttling
-# slows the DSP as well and risks dropped chunks.
+# Thermal governor. The Pi 5 starts pulling clocks back around 80 C, and
+# transcription alone will hold it near there. Waiting before a decode costs
+# latency, which is nearly free -- traffic is sparse and the log gets read
+# after the fact -- while throttling slows the DSP as well and risks dropped
+# chunks.
+#
+# 76/71 was costing more than it saved: on 28 Sep, 92 of 165 seconds were
+# spent held at 77-78 C, over half the available decode time, to stay well
+# inside a limit that was not being approached. 80/75 recovers that.
+#
+# Replaced 4 Oct. The old board sat under a Pi Active Cooler with the fan
+# pinned to full from 40 C (fan_temp0..3 all at speed 255 in config.txt) and
+# still could not keep up: it was effectively a bare SoC in a hot cabin. This
+# is a new Pi 5 (8 GB) in an aluminium dual-fan case with a custom curve,
+# picked from a five-way cooler comparison run before deployment.
+#
+# Same workload, same preset, both measured at the slip:
+#
+#                         cabin    SoC mean   SoC peak   rise above ambient
+#   old cooler,  3 Oct    32.9 C    84.1 C     87.0 C         51.2 C
+#   this cooler, 4 Oct    34.3 C    58.6 C     70.5 C         24.3 C
+#
+# A hotter cabin and a chip 25 C cooler. The rise above ambient more than
+# halved, which at roughly 10 W puts this near 2.4 C/W against the old 5 --
+# about what a well-seated cooler should give. Six hours, 128 messages, zero
+# seconds held for heat, and the governor below never fired once.
+#
+# READ THE RISE, NOT THE ABSOLUTE TEMPERATURE. The cabin swings 12 C between
+# a cool morning and a hot afternoon, and 80 C means something completely
+# different at each end. On 3 Oct the governor was tuned three times against
+# a moving ambient and made things worse each time, because thermal_resume_
+# below had become unreachable without anyone noticing. The ambient trace on
+# the thermal report exists to stop that happening again.
 #
 # The queue is newest-first, so whatever piles up during a pause is the oldest
 # and least interesting. max_wait caps any single stall.
+
+# --- Hallucination blocklist -----------------------------------------------
 # Optional phrase list built by fetch_hallucinations.py from the public
 # whisper-hallucinations dataset (Whisper run over noise-only clips, so the
 # phrases are what it actually invents). The generator strips anything
@@ -351,9 +518,9 @@ temperatures                = [0.0]
 # times over, the repetition filters catch it regardless.
 hallucination_list   = "~/hallucinations.json"
 
-thermal_pause_above  = 76.0
-thermal_resume_below = 71.0
-thermal_max_wait_s   = 45.0
+thermal_pause_above  = 79.0
+thermal_resume_below = 75.0
+thermal_max_wait_s   = 20.0
 
 # No prompt: priming the decoder makes its inventions plausible rather than
 # obviously wrong, which is the worse failure.
@@ -368,16 +535,21 @@ thermal_max_wait_s   = 45.0
 # arrived at 25.7-26.2 dB with a duration of 0.7-2.2 s, which is a repeating
 # emitter. A spectrum scan cannot tell narrowband interference from traffic.
 channels = [
-  { name = "Ch68 Recreation", freq = 156425000 },   # -337.5 kHz  non-commercial working
+  #{ name = "Ch68 Recreation", freq = 156425000 },   # -337.5 kHz  non-commercial working
   { name = "Ch09 Calling",    freq = 156450000 },   # -312.5 kHz  calling
-  { name = "Ch69 Recreation", freq = 156475000 },   # -287.5 kHz  non-commercial working
+  #{ name = "Ch69 Recreation", freq = 156475000 },   # -287.5 kHz  non-commercial working
   { name = "Ch12 Port Ops",   freq = 156600000 },   # -162.5 kHz  used at Catalina
   { name = "Ch16 Distress",   freq = 156800000 },   #  +37.5 kHz  distress and calling
   { name = "Ch22A USCG Info", freq = 157100000 },   # +337.5 kHz  USCG broadcasts
 
-  # Interstitial, quiet across the cleaned survey.
-  { name = "ref-a", freq = 156237500, role = "reference" },
-  { name = "ref-b", freq = 156987500, role = "reference" },
+  # Re-picked from the 25 Sep survey on the masthead antenna. The previous
+  # pair (156.2375 and 156.9875) were chosen at the old location and are not
+  # empty here: ref-b fired dozens of times an hour. Worst-minute level above
+  # the noise floor, over 22 clean minutes: these two 3.1-3.8 dB, the old pair
+  # 8.0 and 10.4 dB. Kept far apart so the antenna alarm sees both ends of the
+  # window. 157.4875 is above Ch88, where the marine plan ends.
+  { name = "ref-a", freq = 156162500, role = "reference" },
+  { name = "ref-b", freq = 157487500, role = "reference" },
 
   # Ch14 pulled out to measure its thermal cost. It was by far the busiest
   # channel here -- 11 messages to Ch16's 4 -- and it tracks the ships crossing
@@ -447,27 +619,26 @@ compression_ratio_threshold = 2.4
 # Tokens per second of audio the decoder may produce. Speech is around four or
 # five; eight is generous. This is the hard stop on a runaway loop, and it
 # matters most on exactly the preset where the VAD is off.
+#
+# Ceiling is 14: see the longer note under [preset.boat]. Above that,
+# 30 * this + 16 exceeds Whisper's 448-token context and every decode fails.
 max_tokens_per_second       = 8
 
 # Narrower than the 3600 default. FM noise rises with frequency before
 # de-emphasis, so this costs little speech and removes the hissiest part.
 fm_audio_hi_hz      = 3000
 
-# NO distress vocabulary in this prompt, deliberately. initial_prompt
-# conditions the decoder on the text as though it preceded the audio, so
-# listing "mayday" and "securite" makes the model reach for them when it cannot
-# hear clearly. That produced a transcript reading "Securite securite, vessel
-# mayday, this is the United States Coast..." on four seconds of noise -- a
-# fabricated distress call, which is the worst output this program could make.
+# NO PROMPT ON MARINE PRESETS, deliberately. initial_prompt conditions the
+# decoder on text as though it preceded the audio, which does not merely make
+# hallucination likelier -- it makes it PLAUSIBLE. Unprompted, Whisper invents
+# generic filler that the subtitle and loop filters catch. Prompted, it invents
+# fluent marine phraseology that nothing can distinguish from real traffic.
 #
-# The model knows these words without priming; the prompt only biases it toward
-# emitting them under uncertainty. Operational vocabulary stays, because being
-# wrong about a channel number is cheap and being wrong about a mayday is not.
-# No prompt. initial_prompt conditions the decoder on text as though it
-# preceded the audio, which does not merely make hallucination likelier -- it
-# makes it PLAUSIBLE. Unprompted, Whisper invents generic filler that the
-# subtitle and loop filters catch. Prompted, it invents fluent marine
-# phraseology that nothing can distinguish from real traffic.
+# The earlier wording listed "mayday" and "securite" and produced a transcript
+# reading "Securite securite, vessel mayday, this is the United States Coast..."
+# on four seconds of noise -- a fabricated distress call, which is the worst
+# output this program could make. The model knows those words without priming;
+# the prompt only biased it toward reaching for them under uncertainty.
 #
 # A poorly transcribed real transmission is recoverable: the audio is kept and
 # the text is marked unclear. A fabricated one that reads correctly is not.
@@ -556,3 +727,11 @@ channels = [
   { name = "ref-a", freq = 162337500, role = "reference" },
   { name = "ref-b", freq = 162487500, role = "reference" },
 ]
+
+[ai]
+provider = "gemini"
+endpoint = "https://generativelanguage.googleapis.com/v1beta"
+model = "gemini-3.8-flash"
+thinking_budget = 0
+timeout_s = 600
+export_query = "channel=16,22a&hours=24&text=1&min_quality=55&min_duration=3"
