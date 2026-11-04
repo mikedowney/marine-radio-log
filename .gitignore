@@ -63,3 +63,7 @@ run.log
 __pycache__/
 *.pyc
 .xsession-errors*
+
+# --- editor and OS directory droppings ------------------------------------
+Thumbs.db
+.DS_Store

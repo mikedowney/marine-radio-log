@@ -68,6 +68,23 @@ base_dir  = "~/watchkeeper"
 
 
 [radio]
+# Edge treatment before decoding. The primary decoder drops the opening of a
+# transmission when either edge is abrupt; treating both ends recovered the
+# proword and the station ID where treating the front alone did not. Set any
+# of these to 0 to disable that edge.
+edge_head_trim_ms = 400.0
+edge_head_pad_ms  = 0.0
+edge_tail_trim_ms = 100.0
+edge_tail_pad_ms  = 0.0
+
+# Retry an implausibly sparse decode against the raw, untreated audio. Good
+# decodes run 10-17 characters per second; the known failures sat at 3.2, so
+# a clip at least retry_min_s long that comes back under retry_min_cps is
+# decoded a second time with the gain below. retry_min_cps = 0 disables it.
+retry_min_s    = 12.0
+retry_min_cps  = 6.0
+retry_gain     = 1.5
+
 station_name = "Radio Log"   # title of the web page and exported transcripts
 
 # Where the receiver is, in decimal degrees. The Coast Guard reads out
@@ -130,6 +147,34 @@ max_messages = 2000        # Recordings kept, deleted with their database row.
                            # until it is genuinely the oldest thing in it.
 max_record_gb = 8.0        # Cap on --record raw I/Q files.
 # --- Transcription ---------------------------------------------------------
+# Two engines run in sequence. The primary decoder sees every clip and
+# produces most of the log; the second pass re-reads only what the primary
+# struggled with. Set primary_model = "" to run faster-whisper alone, which
+# is what this program did before 23 October.
+
+# --- The primary decoder ---------------------------------------------------
+# Parakeet via onnx-asr. Roughly an order of magnitude faster than
+# faster-whisper on the same board, which is what makes keeping up with six
+# channels possible at all. Requires the onnx_asr package.
+primary_model      = "nemo-parakeet-tdt-0.6b-v2"
+primary_quant      = "none"        # "int8" is faster and measurably worse
+primary_model_path = "~/.cache/parakeet-fp32"
+
+# Clips longer than this are split before the primary decoder sees them, at
+# the quietest point within two seconds of the boundary, so that a spoken
+# coordinate is not cut in half.
+#
+# DO NOT RAISE IT CASUALLY. Encoder activations are quadratic in input
+# length: a 373 s broadcast fed in whole cost 3.2 GB and was OOM-killed on an
+# 8 GB board, and its rtf went from 0.12 to 0.43. onnx-asr documents 20-30 s
+# as the model's useful input range; 120 keeps memory flat at about 1.9 GB.
+primary_chunk_s    = 120.0
+
+# --- The second pass -------------------------------------------------------
+# `model` below is the second-pass engine. The name is historical: faster-
+# whisper was the only engine until 23 October. Every faster-whisper setting
+# from here down to low_conf_* governs this pass alone, which runs on roughly
+# a fifth of traffic -- NOT the decoder that produces most of the log.
 # The encoder processes a padded 30-second window at a time, so a 2-second
 # message costs about the same as a 25-second one. Longer clips are not one
 # bigger pass: faster-whisper slides that same 30-second window along, so a
@@ -212,6 +257,11 @@ max_norm_gain_db = 26.0    # ceiling on the lift applied to a quiet clip
 min_transcribe_quality = 55.0   # 0 disables
 min_transcribe_s       = 2.0    # mic-pop cutoff; 0 disables
 always_transcribe      = ["Ch16 Distress", "Ch22A USCG Info"]
+
+# Readability floor for the SECOND PASS on a clip the primary heard nothing
+# in. 0 means always look, which is the useful setting: silence from the
+# primary is exactly the case the second pass exists for.
+always_min_quality     = 0
 
 # Readability at or above which a transcript is never discarded outright, only
 # trimmed -- the guard that stops the repetition filter throwing away a station
@@ -441,8 +491,10 @@ max_message_s       = 90.0
 min_snr_db          = 0.0
 carrier_tail_keep_s = 0.05
 
-# transcribe_backlog is deliberately not set here: the program default is 12,
-# which is the value wanted. Set it explicitly if that default ever changes.
+# The queue is served newest-first, so the top of the log stays current under
+# load and the backlog drains from the bottom. The program default is 12;
+# a busy six-channel watch wants far more headroom than that.
+transcribe_backlog  = 400
 
 vad_filter          = false
 no_speech_threshold = 0.8
@@ -735,3 +787,21 @@ model = "gemini-3.8-flash"
 thinking_budget = 0
 timeout_s = 600
 export_query = "channel=16,22a&hours=24&text=1&min_quality=55&min_duration=3"
+
+# Consecutive clips on one channel that together exceed this are treated as a
+# single broadcast when the brief counts how often something was heard, so a
+# bulletin split across three clips is not reported as three sightings.
+stitch_min_duration_s = 595.0
+
+# Your own vessel name. The brief looks for it in the traffic and says
+# plainly whether it was called. Leave it unset if you would rather not put
+# the name in the prompt.
+# vessel_name = "Your Boat"
+
+
+[web]
+# The thermal report: the header link, /report and /api/thermal. It plots SoC
+# temperature against messages per bucket, which is the comparison that tells
+# a cooler that looks worse from an hour that was simply busier. On by
+# default; set false to hide it.
+thermal_report = true

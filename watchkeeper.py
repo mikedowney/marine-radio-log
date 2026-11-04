@@ -315,7 +315,56 @@ MAX_NORM_GAIN_DB = 20.0
 LIMITER_CREST = 4.0
 LIMITER_LOOKAHEAD_S = 0.005      # gain starts easing down before the peak lands
 
-# --- Whisper ---
+# --- Decoders ---
+# The primary decoder is a transducer run through onnx-asr: variable-length
+# input, so a 3 s clip costs 3 s of encoder rather than a padded 30 s window,
+# and no mechanism for generating text after the audio ends.
+PRIMARY_MODEL = "nemo-parakeet-tdt-0.6b-v2"
+PRIMARY_QUANT = "int8"
+# A plain directory holding the model and its external .data file. Needed for
+# the unquantised weights, which the Hugging Face cache cannot serve directly.
+# Empty means the normal cache path, which is correct for int8.
+PRIMARY_MODEL_PATH = ""
+# Cut this much off each end of a clip and pad each end with silence
+# before decoding. Parakeet drops the opening of a transmission when
+# either edge is abrupt; treating both ends recovered the proword and
+# all three station IDs on row 19454, where the front alone did not.
+# Head and tail are separate: a squelch burst at the start, a cut-off
+# decay at the end. Set any to 0 to disable. Evidence is one clip.
+EDGE_HEAD_TRIM_MS = 400.0
+EDGE_HEAD_PAD_MS = 1000.0
+EDGE_TAIL_TRIM_MS = 400.0
+EDGE_TAIL_PAD_MS = 1000.0
+# The edge treatment helps most clips and collapses a few. When a
+# decode comes back implausibly sparse -- under RETRY_MIN_CPS
+# characters per second, on a clip at least RETRY_MIN_S long -- the
+# raw audio is decoded too and kept if it is RETRY_GAIN times longer.
+# Good decodes run 10-17 chars/s; the known failures sat at 3.2.
+# Set RETRY_MIN_CPS to 0 to disable.
+RETRY_MIN_S = 12.0
+RETRY_MIN_CPS = 6.0
+RETRY_GAIN = 1.5
+# Encoder activations are quadratic in input length: a 373 s broadcast cost
+# 3.2 GB and was OOM-killed on an 8 GB Pi. Longer clips are split at the
+# quietest point near the boundary so a spoken coordinate is not cut in half.
+PRIMARY_CHUNK_S = 30.0
+
+# The second pass. Better than the primary at coordinate digits -- 4 clear
+# wins to 1 over the clips with hand transcripts -- and worse at everything
+# else, so it supplies the coordinate and never the transcript, except where
+# the primary returned nothing at all.
+SECOND_MODEL = ""                # "" means fall back to MODEL_SIZE
+SECOND_IDLE_RELEASE_S = 900.0    # unload after this long unused; 0 keeps it
+SECOND_PASS_ON_EMPTY = True      # also run it when the primary heard nothing
+# Readability floor for that empty-result pass, NOT the discard threshold.
+# KEEP_ABOVE_QUALITY is 60, and real traffic on this receiver scores below
+# it -- a Securite broadcast measured 47.6, two clips in the bench set 58.1
+# and 49.2 -- so gating on it would skip the second pass on exactly the
+# transmissions worth recovering. The pass costs about 290 s across 80
+# clips, so the default is 0: always look. Its output is still marked low.
+SECOND_PASS_MIN_QUALITY = 0.0
+
+# --- Whisper (the second pass) ---
 MODEL_SIZE = "small.en"
 CPU_THREADS = 2
 # Decoder cost, not encoder cost, is what varies between clips: the encoder
@@ -660,12 +709,60 @@ def strip_annotations(text: str) -> str:
 # so one appearing means the decoder stopped transcribing and started reciting
 # YouTube outros.
 SUBTITLE_CORPUS = re.compile(
-    r"thank(?:s| you) for watching"
-    r"|please\s+subscribe|subscribe to (?:my|the) channel"
+    # The object is a list, not a word. Whisper varies it freely -- one real
+    # broadcast on 9 Oct ended with watching, watching, reading and listening
+    # in four consecutive outros -- and a pattern naming only "watching"
+    # removes three of the four and leaves the rest looking like traffic.
+    #
+    # Every object here is one that essentially never occurs in marine voice.
+    # "your assistance", "the information", "your time" and "your attention"
+    # are deliberately ABSENT: real stations say those, and swallowing them
+    # would truncate genuine transmissions.
+    r"thank(?:s| you)?(?: you)? for "
+    r"(?:watching|viewing|reading|listening|subscribing"
+    r"|joining us|being with us|being here|tuning in|stopping by"
+    r"|your support|the support)"
+    r"|please\s+subscribe|subscribe to (?:my|the|this|these|our) channel"
+    r"|subscribe to (?:this|these|the) videos?"
     r"|(?:like|hit) (?:and|the) (?:subscribe|like button|bell)"
+    r"|like (?:and share )?(?:this|the|my) video"
+    r"|share (?:this|the) video|comment below"
     r"|subscribe and like|don'?t forget to subscribe"
-    r"|see you (?:next time|in the next)"
+    r"|see you (?:next time|next week|in the next)"
     r"|subtitles? (?:by|and corrections)|captions? by|transcription by"
+    # Sponsor and public-service tags, matched by the clause that leads into
+    # the address rather than by the address. The decoder habitually puts a
+    # full stop after "visit", which splits the sentence before the URL and
+    # leaves the leader standing on its own with nothing in it for a URL
+    # pattern to find. Observed on a 2.6 s Ch16 clip, stored as "For more
+    # information, visit".
+    #
+    # The web verb is required. "contact" and "call" are deliberately absent:
+    # "for more information contact Coast Guard Sector Los Angeles on channel
+    # one six" is real traffic, and common.
+    r"|for (?:more|further) info(?:rmation)?,?\s+(?:please\s+)?"
+    r"(?:visit|go to|log ?on to|see our|check out)"
+    r"|to learn more,?\s+(?:please\s+)?visit"
+    r"|visit (?:us at|our website|our site)"
+    # Toll-free numbers. The VERB is not matched here -- "for more
+    # information, call the Captain of the Port" is real traffic -- but a
+    # 1-800 number never crosses a marine channel. Hyphens are required, so
+    # the time group "180800 to 200900" seen in the same traffic is not a
+    # match. Letters allowed, and the groups are 3-4 then 4-7 characters,
+    # for 1-800-FEMA-LIVE.
+    r"|\b1[-\s]?8(?:00|33|44|55|66|77|88)[-\s]"
+    r"(?:[0-9]{3,4}[-\s][0-9]{4}"
+    r"|(?-i:[A-Z0-9]{3,4}[-\s][A-Z0-9]{4,7}))\b"
+    # A clause may sit between "information" and the web verb: "for more
+    # information ON THE NATIONAL WEATHER SERVICE, visit ...". Bounded and
+    # lazy, and [^.!?] keeps the match inside one sentence. The web verb is
+    # still required, so "for more information contact Coast Guard sector
+    # Los Angeles" is still untouched.
+    r"|for (?:more|further) info(?:rmation)?\b[^.!?]{0,60}?"
+    r"\b(?:visit|go to|log ?on to)\b"
+    # The decoder renders addresses as "www .fema.org", or truncates before
+    # the dot entirely. Neither contains "www." so neither matched.
+    r"|\bvisit\s+www\b|\bwww\s+\."
     r"|amara\.org|www\.|\.com\b",
     re.I)
 
@@ -677,6 +774,24 @@ DISTRESS_RE = re.compile(
     r"\bmay ?day\b|\bpan[ -]?pan\b|\bsecurit[ae]\b|\bseelonce\b"
     r"|\bdistress\b|\bsinking\b|\babandon(?:ing)? ship\b"
     r"|\bman overboard\b|\btaking on water\b|\bemergency\b", re.I)
+
+def all_boilerplate(text):
+    """True when every sentence left is a phrase Whisper is known to invent.
+
+    HALLUCINATION_BLOCKLIST matches a whole transcript against one known
+    phrase. That misses two cases which are the same thing with punctuation:
+    a remainder left by the subtitle trim, and a phrase the decoder repeated
+    ("Thank you. Thank you").
+
+    Deliberately strict about what counts: every sentence must be in the
+    blocklist, so one real clause anywhere keeps the whole transcript.
+    """
+    parts = [p for p in re.split(r"(?<=[.!?])\s+|\n+", text or "") if p.strip()]
+    if not parts:
+        return True
+    return all(p.lower().strip(" .!?\u2026,-") in HALLUCINATION_BLOCKLIST
+               for p in parts)
+
 
 def load_hallucination_list(path):
     """Merge a generated phrase list into the built-in filters.
@@ -750,6 +865,173 @@ def strip_subtitle_corpus(text: str):
         return text, False
     return " ".join(kept).strip(), True
 
+
+# Readability floor applied to the always_transcribe channels. Separate from
+# MIN_TRANSCRIBE_QUALITY and far lower: those channels exist to be decoded
+# below the ordinary bar, and the only clips worth refusing are the ones with
+# no recoverable speech in them at all. 0 disables, restoring the behaviour
+# where always_transcribe bypassed every quality check.
+#
+# Measured on this receiver over 7 days: a real Securite broadcast scored
+# 47.6, so anything at or above 50 is unsafe here. See quality_floor.sql.
+ALWAYS_MIN_QUALITY = 0.0
+
+
+def trim_trailing_boilerplate(text, min_run=2):
+    """Drop a run of known-hallucination sentences from the end.
+
+    The exact-match blocklist is only ever tested against a whole transcript,
+    so it never sees a hallucinated tail that follows real speech. Measured
+    case, Ch16, 2.6 s, 99% readability: 'Federal traffic, San Pedro. Thank
+    you. Thank you.' -- the first sentence is the transmission, the rest is
+    the decoder filling time.
+
+    Two or more in a row is required before anything is removed. A human says
+    "thank you" once; repeating it is the decoder's signature. That keeps
+    "...switching to one six. Thank you." intact, which is real radio.
+
+    Returns (text, number of sentences removed).
+    """
+    if not text:
+        return text, 0
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    n = 0
+    # Stops at len-1 so a transcript that is nothing BUT boilerplate is left
+    # for the whole-transcript blocklist to reject outright, rather than being
+    # quietly reduced to its first sentence.
+    while len(parts) - n > 1 and parts[len(parts) - n - 1].lower().strip(
+            " .!?…,-") in HALLUCINATION_BLOCKLIST:
+        n += 1
+    if n < min_run:
+        return text, 0
+    kept = " ".join(parts[:len(parts) - n]).strip()
+    if len(re.findall(r"[a-z0-9']+", kept.lower())) < 2:
+        return text, 0
+    return kept, n
+
+
+# "Out" is a proword, not a word: it declares the transmission finished. A
+# sentence-final one with text after it means the decoder carried on past the
+# end of the transmission. \b keeps "outbound to Los Angeles" out of it.
+OUT_SENTENCE = re.compile(r"\bout\b\s*[.!?…]", re.I)
+
+# Diagnostic trace of decoder segment timing. Nothing reads this; see
+# patch_out_proword.py for why it exists. Delete the file when done.
+SEGMENT_TRACE_PATH = os.path.expanduser("~/segment_trace.jsonl")
+SEGMENT_TRACE_MAX_MB = 50.0
+
+
+def split_after_out(text):
+    """Split a transcript at the LAST sentence-final "out" proword.
+
+    Returns (transmission, tail). The tail is "" when there is no proword or
+    nothing follows it, which is the overwhelmingly common case.
+    """
+    last = None
+    for last in OUT_SENTENCE.finditer(text or ""):
+        pass
+    if last is None:
+        return text, ""
+    tail = (text[last.end():] or "").strip()
+    return (text[:last.end()].strip(), tail) if tail else (text, "")
+
+
+_SEG_TRACE_ANNOUNCED = False
+_SEG_TRACE_COMPLAINED = False
+
+def log_segment_trace(row_id, path, segs):
+    """Append one line of per-segment timing to the diagnostic trace.
+
+    Measurement only. Every failure mode here -- unwritable path, a segment
+    object missing an attribute, a full disk -- is swallowed, because a
+    diagnostic that can break a transcription is worse than no diagnostic.
+    """
+    global _SEG_TRACE_ANNOUNCED, _SEG_TRACE_COMPLAINED
+    if not _SEG_TRACE_ANNOUNCED:
+        # Proof that this line is reached at all. Without it, "no file" and
+        # "never called" are indistinguishable from outside the process.
+        _SEG_TRACE_ANNOUNCED = True
+        log.info("segment trace active -> %s", SEGMENT_TRACE_PATH)
+    try:
+        if (os.path.exists(SEGMENT_TRACE_PATH)
+                and os.path.getsize(SEGMENT_TRACE_PATH)
+                > SEGMENT_TRACE_MAX_MB * 1e6):
+            return
+        rows, prev_end, after_out = [], None, False
+        for i, s in enumerate(segs):
+            txt = (s.text or "").strip()
+            words = len(re.findall(r"[A-Za-z0-9']+", txt))
+            start, end = float(s.start), float(s.end)
+            span = max(end - start, 1e-6)
+            rows.append({
+                "i": i,
+                "start": round(start, 2),
+                "end": round(end, 2),
+                "gap": None if prev_end is None else round(start - prev_end, 2),
+                "words": words,
+                "wps": round(words / span, 2),
+                "nsp": round(float(s.no_speech_prob), 3),
+                "alp": round(float(s.avg_logprob), 3),
+                "after_out": after_out,
+                "text": txt,
+            })
+            prev_end = end
+            if OUT_SENTENCE.search(txt):
+                after_out = True
+        with open(SEGMENT_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "row_id": row_id,
+                "clip": os.path.basename(path),
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "segs": rows,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        # Loud once, then quiet. A diagnostic that fails silently is worse
+        # than no diagnostic: it looks exactly like "nothing to report".
+        if not _SEG_TRACE_COMPLAINED:
+            _SEG_TRACE_COMPLAINED = True
+            log.warning("segment trace could not be written to %s; giving up "
+                        "quietly after this one. Transcription is unaffected.",
+                        SEGMENT_TRACE_PATH, exc_info=True)
+
+
+# How far past the end of a recording a segment may end before it is treated
+# as describing padding rather than audio. Whisper quantises long segments to
+# whole seconds, so this has to clear rounding; the measured overrun was 25.7
+# seconds, so there is a lot of room between the two.
+SEGMENT_OVERRUN_S = 1.0
+
+
+def drop_segments_past_audio(segs, duration_s, row_id=None):
+    """Discard segments the recording cannot account for.
+
+    The encoder window is zero-padded to 30 s, so a decoder that runs out of
+    audio can keep producing text and stamp it beyond the end of the file. A
+    58.3 s broadcast on 11 October produced segments out to 83.98 s; the audio
+    had stopped mid-sentence-boundary at 58.0 s with no trailing silence.
+
+    Tested on the END time: the first bad segment in that case STARTED at
+    58.00, still inside the audio. Everything from the first offender onward
+    goes, because the decoder does not recover once it is past the end.
+
+    Returns (segments, number dropped).
+    """
+    if not segs or duration_s <= 0:
+        return segs, 0
+    limit = duration_s + SEGMENT_OVERRUN_S
+    for i, s in enumerate(segs):
+        try:
+            end = float(s.end)
+        except (TypeError, ValueError):
+            continue
+        if end > limit:
+            if row_id is not None:
+                log.info("row %d: dropped %d segment(s) ending past the "
+                         "%.1fs recording (first %.1f-%.1fs): %r",
+                         row_id, len(segs) - i, duration_s,
+                         float(s.start), end, (s.text or "").strip()[:60])
+            return segs[:i], len(segs) - i
+    return segs, 0
 
 # Text that Whisper reliably invents when fed noise
 HALLUCINATION_BLOCKLIST = {
@@ -900,8 +1182,49 @@ _NUM_WORDS = {
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
     "niner": "9",
 }
-_HYPHEN_WORDS = r"hyphens?|hypins?|hypens?|hyph\s*ins?|dash(?:es)?"
+_HYPHEN_WORDS = (r"hyphens?|hypins?|hypens?|hyph\s*ins?|dash(?:es)?"
+                 # What USCG and Navy stations actually say for
+                 # the separator: "32 tack 26 north". Needs
+                 # numbers either side, so "starboard tack" and
+                 # "tack upwind" are untouched.
+                 r"|tacks?|tac")
 _DECIMAL_WORDS = r"decimal\s*points?|decimals?"
+
+
+# Spelled-out numbers above nine, for coordinates read out in words.
+# Joined rather than summed: "thirty three" -> "3"+"3" -> 33, which equals
+# 30+3, and the same holds for every tens-plus-unit pair.
+_TEEN_WORDS = {
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19",
+}
+_TENS_WORDS = {
+    "twenty": "2", "thirty": "3", "forty": "4", "fourty": "4", "fifty": "5",
+    "sixty": "6", "seventy": "7", "eighty": "8", "ninety": "9",
+}
+_TENS_THEN_UNIT = re.compile(
+    r"\b(%s)[\s-]+(%s)\b" % ("|".join(_TENS_WORDS),
+                              "|".join(k for k in _NUM_WORDS
+                                       if k not in ("zero", "oh"))))
+_TENS_THEN_DIGIT = re.compile(r"\b(%s)[\s-]+(\d)\b" % "|".join(_TENS_WORDS))
+_TENS_ALONE = re.compile(r"\b(%s)\b" % "|".join(_TENS_WORDS))
+_TEENS_RE = re.compile(r"\b(%s)\b" % "|".join(_TEEN_WORDS))
+
+
+def expand_number_words(s):
+    """Rewrite ten..ninety-nine as digits, ahead of the single-digit pass.
+
+    Runs before _normalise's own number handling, which only knows single
+    digits and would leave "thirty three" as prose -- costing the position
+    its degrees value and so the whole group.
+    """
+    s = _TENS_THEN_UNIT.sub(
+        lambda m: _TENS_WORDS[m.group(1)] + _NUM_WORDS[m.group(2)], s)
+    s = _TENS_THEN_DIGIT.sub(
+        lambda m: _TENS_WORDS[m.group(1)] + m.group(2), s)
+    s = _TENS_ALONE.sub(lambda m: _TENS_WORDS[m.group(1)] + "0", s)
+    return _TEENS_RE.sub(lambda m: _TEEN_WORDS[m.group(1)], s)
 
 
 def _normalise(text):
@@ -917,6 +1240,12 @@ def _normalise(text):
     s = (text or "").lower()
     for d in "‐‑–—":
         s = s.replace(d, "-")
+    # "two niner" glued to its digit: the decoder writes 29er, and with no
+    # standalone word there is nothing for _NUM_WORDS to match. Logged 27 Oct
+    # on an EPIRB position that was lost entirely because of it. Only a 9
+    # immediately before "er" is touched, so "number" and "October" are safe.
+    s = re.sub(r"\b(\d*9)er\b", r"\1", s)
+    s = expand_number_words(s)
     # Word hyphenation ("three-four") is not the degree separator; the spoken
     # word "hyphen" is. Split the former, leave a hyphen between digits alone.
     s = re.sub(r"(?<=[a-z])-(?=[a-z])", " ", s)
@@ -958,10 +1287,83 @@ def _normalise(text):
         prev = s
         s = re.sub(r"(?<=\d)\s+(?=\d)", "", s)
     s = re.sub(r"\s*([-.])\s*(?=\d)", r"\1", s)
+    # "32 degrees 40.331 north" -- the word is doing the job a hyphen does
+    # in "32-40.331", so make it one. Only between two numbers: "180 degrees
+    # true", "68 degrees", "course 270 degrees, speed 8 knots" have nothing
+    # numeric after the word and stay prose.
+    s = re.sub(r"(?<=\d)\s*(?:degrees?|degs?\.?|[\u00b0\u00ba])\s*(?=\d)",
+               "-", s)
+    # "33-03.8667 minutes north": _POS_RE wants the hemisphere immediately
+    # after the fraction, so the word in between costs the group its "north"
+    # and the position is discarded. "ETA 20 minutes" loses the word too and
+    # is still not a position, because a bare number never was one.
+    s = re.sub(r"(?<=\d)\s*(?:minutes?|mins?\.?|[\u2032'])", "", s)
+
     # Digits of the fraction read out singly come back hyphenated -- "01
     # decimal 9-2-3". Past the decimal point a hyphen is never a separator.
     s = re.sub(r"(\d{1,3}-\d{1,2}\.)((?:\d+-)+\d+)",
                lambda m: m.group(1) + m.group(2).replace("-", ""), s)
+    # "19.4.7" -- a number cannot have two decimal points, and the decoder
+    # sprinkles them through a read-out coordinate. Taken as written the
+    # minutes become 19.4 rather than 19.47, which is half a mile of error
+    # that nothing downstream would flag. Looped because there can be more
+    # than one.
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"(\d+\.\d+)\.(?=\d)", r"\1", s)
+    # "33-19.47.N" -- _POS_RE wants the hemisphere immediately after the
+    # fraction, so a full stop in between costs the group its hemisphere and
+    # the position never pairs up. A hemisphere letter never needs a sentence
+    # boundary before it, so removing one cannot invent a coordinate.
+    s = re.sub(r"(?<=\d)\.(?=\s*(?:north|south|east|west|[nsew])\b)", "", s)
+
+    # "3212N by 11843W" -- degrees and minutes run together with the
+    # hemisphere attached. Eight broadcasts in the history use this and none
+    # parsed. The hemisphere letter is what makes splitting it safe: a bare
+    # four-digit number is a time, a frequency or a channel, and none of those
+    # is followed by north, south, east or west.
+    # The fraction is optional: "11708.4 west" is 117 degrees 08.4 minutes,
+    # and requiring the hemisphere directly after the digits missed every one
+    # of those. (?<![\d-]) keeps the rule out of a group that already has its
+    # separator -- without it "32-39, 909N" normalises to "32-39909n" and
+    # gets split as "399-09n", damaging a coordinate instead of rescuing one.
+    s = re.sub(r"(?<![\d-])(\d{2,3})(\d{2})(\.\d{1,4})?"
+               r"(?=\s*(?:north|south|east|west|[nsew])\b)",
+               lambda m: "%s-%s%s" % (m.group(1), m.group(2), m.group(3) or ""),
+               s)
+    # "32 degrees, 34, decimal, minor, north" -- the same broadcast reads
+    # "34 decimal niner north" in other transcripts, so "minor" here is the
+    # decoder mishearing "niner". Only directly after the decimal point:
+    # "minor to moderate flooding of sea water" must stay prose.
+    s = re.sub(r"(?<=\.)\s*minor\b", "9", s)
+    # The spacing cleanup earlier in this function has already run, so a
+    # fraction recovered here still has a space in front of it: "34 .9".
+    # _POS_RE is compiled with re.X and ignores whitespace in the PATTERN,
+    # which means it will not cross whitespace in the TEXT -- the fraction
+    # would be silently dropped and the position reported nine tenths of a
+    # mile out. Close the gap again.
+    s = re.sub(r"\s*([-.])\s*(?=\d)", r"\1", s)
+
+    # "32 degrees, 4-0, decimal 3-3-1" -- the station reads the minutes out
+    # digit by digit and the decoder hyphenates them. The fraction is already
+    # repaired above; this does the same for the minutes, which otherwise
+    # leave "32-4-0.331" and stop the pattern at "32-4".
+    #
+    # Only a run where every element is a SINGLE digit, and only straight
+    # after a degrees group. "10-22" and "33-19-47" have two-digit elements
+    # and are untouched, and a bare "0-0-0-1" or "1-5-7" is not preceded by a
+    # degrees group so it is never a candidate.
+    s = re.sub(r"(?<!\d)(\d{1,3})-(\d(?:-\d){1,3})(?=[.\s]|$)",
+               lambda m: "%s-%s" % (m.group(1), m.group(2).replace("-", "")),
+               s)
+    # "33-1947N" is 33-19.47N: the decimal point in the minutes is missing
+    # altogether. The hemisphere letter has to follow, which is what keeps
+    # this away from times, channels and frequencies.
+    s = re.sub(r"(?<!\d)(\d{1,3})-(\d{2})(\d{2})"
+               r"(?=\s*(?:north|south|east|west|[nsew])\b)",
+               lambda m: "%s-%s.%s" % (m.group(1), m.group(2), m.group(3)), s)
+
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -1168,6 +1570,15 @@ def find_positions(text, home=None, max_nm=None):
         if hem in ("n", "s"):
             if val <= 90:
                 seq.append(("lat", -val if hem == "s" else val))
+            elif val <= 180:
+                # Above 90 is past the pole, so the number is sound and the
+                # word is not: "117 degrees 13.252 north" is a longitude that
+                # was heard as a latitude. Hand it to the unknown-hemisphere
+                # path, which picks the sign that lands nearer home and still
+                # has to clear the distance check. Measured on a Ch22A
+                # broadcast of 11 October that otherwise produced no position
+                # at all.
+                seq.append(("?", val))
         elif hem in ("e", "w"):
             if val <= 180:
                 seq.append(("lon", -val if hem == "w" else val))
@@ -1178,6 +1589,15 @@ def find_positions(text, home=None, max_nm=None):
     while i < len(seq) - 1:
         kind, lat = seq[i]
         nkind, lon = seq[i + 1]
+        # A filler word between the fraction and the hemisphere -- "decimal 9
+        # OR north", "decimal 442 TO north" -- costs the group its hemisphere
+        # and leaves it unknown. Enumerating the filler words is a losing
+        # game; an unknown group sitting in front of a known longitude is a
+        # latitude, if it could be one at all. Still distance-checked below,
+        # and reported as assumed.
+        lat_guessed = False
+        if kind == "?" and nkind == "lon" and lat <= 90:
+            kind, lat_guessed = "lat", True
         if kind != "lat" or nkind not in ("lon", "?"):
             i += 1
             continue
@@ -1192,7 +1612,7 @@ def find_positions(text, home=None, max_nm=None):
         entry = {"lat": round(lat, 6), "lon": round(lon, 6),
                  "label": format_position(lat, lon),
                  "url": maps_url(lat, lon),
-                 "assumed": nkind == "?"}
+                 "assumed": nkind == "?" or lat_guessed}
         if home:
             entry["nm"] = round(haversine_nm(home[0], home[1], lat, lon), 1)
             if max_nm and entry["nm"] > max_nm:
@@ -1252,6 +1672,7 @@ PRESET_OVERRIDES = {
     "target_rms": "TARGET_RMS",
     "max_norm_gain_db": "MAX_NORM_GAIN_DB",
     "min_transcribe_quality": "MIN_TRANSCRIBE_QUALITY",
+    "always_min_quality": "ALWAYS_MIN_QUALITY",
     "thermal_sample_s": "THERMAL_SAMPLE_S",
     "thermal_history_days": "THERMAL_HISTORY_DAYS",
     "keep_above_quality": "KEEP_ABOVE_QUALITY",
@@ -1273,6 +1694,21 @@ STORAGE_OVERRIDES = {
 }
 
 RADIO_OVERRIDES = {
+    "primary_model": "PRIMARY_MODEL",
+    "primary_quant": "PRIMARY_QUANT",
+    "primary_model_path": "PRIMARY_MODEL_PATH",
+    "edge_head_trim_ms": "EDGE_HEAD_TRIM_MS",
+    "edge_head_pad_ms": "EDGE_HEAD_PAD_MS",
+    "edge_tail_trim_ms": "EDGE_TAIL_TRIM_MS",
+    "edge_tail_pad_ms": "EDGE_TAIL_PAD_MS",
+    "retry_min_s": "RETRY_MIN_S",
+    "retry_min_cps": "RETRY_MIN_CPS",
+    "retry_gain": "RETRY_GAIN",
+    "primary_chunk_s": "PRIMARY_CHUNK_S",
+    "second_model": "SECOND_MODEL",
+    "second_idle_release_s": "SECOND_IDLE_RELEASE_S",
+    "second_pass_on_empty": "SECOND_PASS_ON_EMPTY",
+    "second_pass_min_quality": "SECOND_PASS_MIN_QUALITY",
     "station_name": "STATION_NAME",
     "home_lat": "HOME_LAT",
     "home_lon": "HOME_LON",
@@ -1288,6 +1724,7 @@ RADIO_OVERRIDES = {
     "target_rms": "TARGET_RMS",
     "max_norm_gain_db": "MAX_NORM_GAIN_DB",
     "min_transcribe_quality": "MIN_TRANSCRIBE_QUALITY",
+    "always_min_quality": "ALWAYS_MIN_QUALITY",
     "thermal_sample_s": "THERMAL_SAMPLE_S",
     "thermal_history_days": "THERMAL_HISTORY_DAYS",
     "keep_above_quality": "KEEP_ABOVE_QUALITY",
@@ -1617,6 +2054,14 @@ def transcribe_gate(channel, quality, duration_s):
     if TRANSCRIBE_CHANNELS and channel not in TRANSCRIBE_CHANNELS:
         return "channel not in transcribe_channels"
     if channel in ALWAYS_TRANSCRIBE:
+        # Still decoded far below the ordinary floor -- that is what this
+        # list is for -- but not when the audio is hopeless. A 42% clip on
+        # Ch16 costs a full decode and comes back as subtitle boilerplate,
+        # which is worse than silence because it reads like traffic.
+        if (ALWAYS_MIN_QUALITY > 0 and quality is not None
+                and quality < ALWAYS_MIN_QUALITY):
+            return "readability %.1f below %.0f (priority channel)" % (
+                quality, ALWAYS_MIN_QUALITY)
         return None
     if MIN_TRANSCRIBE_S > 0 and duration_s < MIN_TRANSCRIBE_S:
         return "under %.1fs" % MIN_TRANSCRIBE_S
@@ -2594,6 +3039,17 @@ MIGRATIONS = [
     ("quality",         "REAL"),    # 0-100 readability, from spectral flatness
     ("soc_temp_c",      "REAL"),    # SoC temperature when the message closed
     ("thermal_wait_s",  "REAL"),    # how long the decode was held for heat
+    ("second_transcript", "TEXT"),  # what the second-pass model said, if it ran
+    ("positions_json",  "TEXT"),    # adjudicated coordinates, as JSON
+]
+
+# The same two columns on the permanent archive. `messages` is a ring that
+# turns over in about three days; history is kept for good, and the web
+# interface's search and export read from it. Without these, a coordinate the
+# second pass recovered disappears when the ring rolls past the row.
+HISTORY_MIGRATIONS = [
+    ("second_transcript", "TEXT"),
+    ("positions_json",  "TEXT"),
 ]
 
 
@@ -2613,6 +3069,10 @@ class Store:
             for name, kind in MIGRATIONS:
                 if name not in have:
                     c.execute(f"ALTER TABLE messages ADD COLUMN {name} {kind}")
+            have_h = {r[1] for r in c.execute("PRAGMA table_info(history)")}
+            for name, kind in HISTORY_MIGRATIONS:
+                if name not in have_h:
+                    c.execute(f"ALTER TABLE history ADD COLUMN {name} {kind}")
             n = c.execute("SELECT COUNT(*) FROM history").fetchone()[0]
             if n:
                 first = c.execute(
@@ -2737,6 +3197,39 @@ class Store:
         self._hist_update(row_id, status=status, **(
             {} if reason is None else {"reject_reason": reason}))
 
+    def pending_jobs(self):
+        """(id, audio_path) for every message still marked pending.
+
+        Oldest first: the caller queues them behind live traffic, and a
+        catch-up should drain in the order the traffic arrived.
+        """
+        return [(r[0], r[1]) for r in self._conn().execute(
+            "SELECT id, audio_path FROM messages WHERE status='pending'"
+            " ORDER BY started_at")]
+
+    def close_orphan_history(self, status="interrupted"):
+        """Mark history rows left pending whose message row is long gone.
+
+        The message ring turns over at max_messages, so an abandoned row from
+        last week has no audio and no message row to join against. Without
+        this they sit at 'pending' forever and the log calls them
+        "transcribing".
+        """
+        c = self._conn()
+        try:
+            with c:
+                cur = c.execute(
+                    "UPDATE history SET status=?, reject_reason="
+                    "'the receiver restarted before this was transcribed'"
+                    " WHERE status='pending' AND NOT EXISTS ("
+                    "   SELECT 1 FROM messages m"
+                    "    WHERE m.started_at = history.started_at"
+                    "      AND m.channel = history.channel)", (status,))
+                return cur.rowcount
+        except sqlite3.Error as e:
+            log.warning("could not close orphaned history rows: %s", e)
+            return 0
+
     def set_thermal_wait(self, row_id: int, seconds: float):
         """Seconds this decode was held waiting for the SoC to cool."""
         c = self._conn()
@@ -2746,16 +3239,31 @@ class Store:
         self._hist_update(row_id, thermal_wait_s=float(seconds))
 
     def update_transcript(self, row_id: int, text: str, status: str,
-                          avg_logprob, no_speech, raw=None, reason=None, rtf=None):
+                          avg_logprob, no_speech, raw=None, reason=None, rtf=None,
+                          second=None, positions=None):
+        """Write a finished transcript.
+
+        `second` and `positions` carry the two-pass result: what the
+        second-pass model said and which coordinates were kept. Both default
+        to None so older callers and historical rows are unaffected -- the
+        web UI still parses the transcript when positions_json is NULL.
+        """
         c = self._conn()
         with c:
             c.execute(
                 "UPDATE messages SET transcript=?, status=?, avg_logprob=?,"
-                " no_speech=?, raw_transcript=?, reject_reason=?, rtf=? WHERE id=?",
-                (text, status, avg_logprob, no_speech, raw, reason, rtf, row_id),
+                " no_speech=?, raw_transcript=?, reject_reason=?, rtf=?,"
+                " second_transcript=?, positions_json=? WHERE id=?",
+                (text, status, avg_logprob, no_speech, raw, reason, rtf,
+                 second,
+                 json.dumps(positions) if positions else None,
+                 row_id),
             )
         self._hist_update(row_id, transcript=text, status=status,
-                          reject_reason=reason, rtf=rtf)
+                          reject_reason=reason, rtf=rtf,
+                          second_transcript=second,
+                          positions_json=(json.dumps(positions)
+                                          if positions else None))
 
     # Retention is strictly oldest-first, by id. Nothing else.
     #
@@ -2830,15 +3338,32 @@ class NewestFirstQueue:
     stops claiming they are still being worked on. Their audio is untouched.
     """
 
-    def __init__(self, maxsize):
+    def __init__(self, maxsize, lowsize=None):
         self.maxsize = maxsize
+        # Work recovered after a restart. Kept apart from live traffic rather
+        # than mixed in: this queue is deliberately short, so letting a
+        # recovery burst share it would evict the very messages it is meant to
+        # protect -- trading old orphans for new ones.
+        self.lowsize = maxsize if lowsize is None else lowsize
         self._items = collections.deque()
+        self._low = collections.deque()
         self._cv = threading.Condition()
         self._closed = False
 
-    def put(self, item):
-        """Returns the items evicted to make room, oldest first."""
+    def put(self, item, low=False):
+        """Returns the items evicted to make room, oldest first.
+
+        low=True is recovered work: it goes in the second tier, where it can
+        never displace a live transmission.
+        """
         with self._cv:
+            if low:
+                self._low.append(item)
+                evicted = []
+                while len(self._low) > self.lowsize:
+                    evicted.append(self._low.popleft())
+                self._cv.notify()
+                return evicted
             self._items.append(item)
             evicted = []
             while len(self._items) > self.maxsize:
@@ -2848,15 +3373,26 @@ class NewestFirstQueue:
 
     def get(self):
         with self._cv:
-            while not self._items and not self._closed:
+            while not self._items and not self._low and not self._closed:
                 self._cv.wait()
             if self._items:
-                return self._items.pop()      # newest
+                return self._items.pop()      # newest live message first
+            if self._low:
+                # FIFO here. Nothing in this tier is live, so newest-first
+                # buys nothing, and oldest-first makes the catch-up finish
+                # instead of leaving the oldest entry permanently last.
+                return self._low.popleft()
             return None
 
     def qsize(self):
+        """Live depth only -- what the log means by "backlog"."""
         with self._cv:
             return len(self._items)
+
+    def lowsize_now(self):
+        """Recovered items still waiting."""
+        with self._cv:
+            return len(self._low)
 
     def close(self):
         with self._cv:
@@ -2914,29 +3450,57 @@ class Transcriber(threading.Thread):
         return waited
 
     def _load(self):
-        # CTranslate2 honours cpu_threads for its own pool, but OpenMP and
-        # OpenBLAS underneath will each start one thread per core unless told
-        # otherwise, so the process ends up oversubscribed and fighting the
-        # channelizer. These must be set before the import.
+        # Thread caps before any inference library is imported. CTranslate2
+        # honours cpu_threads for its own pool, but OpenMP, OpenBLAS and
+        # onnxruntime each start one thread per core unless told otherwise,
+        # and the channelizer cannot fall behind without losing audio.
         os.environ.setdefault("OMP_NUM_THREADS", str(CPU_THREADS))
         os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
         os.environ.setdefault("MKL_NUM_THREADS", "1")
-        from faster_whisper import WhisperModel
-        log.info("loading faster-whisper %s (int8, %d threads)", MODEL_SIZE, CPU_THREADS)
-        t0 = time.time()
-        kw = dict(device="cpu", compute_type="int8", cpu_threads=CPU_THREADS)
         try:
-            # Prefer the cached copy. By default faster-whisper contacts
-            # Hugging Face on every start to check the model revision, which on
-            # a boat with no connectivity means a stall or a failure at the one
-            # moment the system needs to come up.
-            self.model = WhisperModel(MODEL_SIZE, local_files_only=True, **kw)
-            log.info("model ready in %.1fs (from local cache)", time.time() - t0)
-        except Exception:
-            log.info("model not cached; downloading once")
-            self.model = WhisperModel(MODEL_SIZE, **kw)
-            log.info("model ready in %.1fs (downloaded)", time.time() - t0)
-        self.suppress = self._annotation_tokens()
+            import asr_engines
+        except ImportError as e:
+            raise RuntimeError(
+                "asr_engines.py could not be imported (%s). It must sit "
+                "beside watchkeeper.py, and onnx-asr must be installed in "
+                "the interpreter running this service: "
+                "pip install 'onnx-asr[cpu,hub]'" % e)
+
+        home = current_home()
+        t0 = time.time()
+        self.engines = asr_engines.Engines(
+            sys.modules[__name__],
+            home=(home[0], home[1]) if home else None,
+            max_nm=COORD_MAX_NM,
+            parakeet_model=PRIMARY_MODEL,
+            whisper_model=SECOND_MODEL or MODEL_SIZE,
+            quant=PRIMARY_QUANT,
+            model_path=(PRIMARY_MODEL_PATH or None),
+            chunk_s=PRIMARY_CHUNK_S,
+            head_trim_ms=EDGE_HEAD_TRIM_MS,
+            head_pad_ms=EDGE_HEAD_PAD_MS,
+            tail_trim_ms=EDGE_TAIL_TRIM_MS,
+            tail_pad_ms=EDGE_TAIL_PAD_MS,
+            retry_min_s=RETRY_MIN_S,
+            retry_min_cps=RETRY_MIN_CPS,
+            retry_gain=RETRY_GAIN,
+            cpu_threads=CPU_THREADS,
+            beam_size=BEAM_SIZE,
+            idle_release_s=SECOND_IDLE_RELEASE_S,
+            second_pass_on_empty=SECOND_PASS_ON_EMPTY,
+            log=log)
+        # Load the primary now. A missing model or a broken onnxruntime
+        # should stop the transcriber at startup, where the log says so,
+        # not silently on the first transmission of the day.
+        self.engines._parakeet()
+        log.info("primary decoder %s ready in %.1fs; %s loads on demand "
+                 "and unloads after %.0fs idle",
+                 PRIMARY_MODEL, time.time() - t0, SECOND_MODEL or MODEL_SIZE,
+                 SECOND_IDLE_RELEASE_S)
+        # run() does not consult these, but leave them coherent for anything
+        # that reaches into the transcriber.
+        self.model = self.engines
+        self.suppress = [-1]
 
     # Characters that only ever appear in subtitle annotations, censored
     # expletives or music marks -- never in a radio transmission.
@@ -3061,173 +3625,92 @@ class Transcriber(threading.Thread):
 
     def _run(self, row_id: int, path: str):
         audio, sr = sf.read(path, dtype="float32")
-        t0 = time.time()
-        # Bound the output to what the clip could plausibly contain. This is
-        # what stops a runaway loop costing minutes on a four-second recording.
-        cap = int(min(len(audio) / sr, WHISPER_WINDOW_S) * MAX_TOKENS_PER_SECOND) + 16
-        extra = {} if getattr(self, "_no_cap", False) else {"max_new_tokens": cap}
-        segments, _info = self.model.transcribe(
-            audio,
-            **extra,
-            beam_size=BEAM_SIZE,
-            temperature=WHISPER_TEMPERATURES,
-            compression_ratio_threshold=COMPRESSION_RATIO_THRESHOLD,
-            log_prob_threshold=LOG_PROB_THRESHOLD,
-            no_speech_threshold=NO_SPEECH_THRESHOLD,
-            no_repeat_ngram_size=4,
-            condition_on_previous_text=False,
-            initial_prompt=self.prompt,
-            suppress_tokens=getattr(self, "suppress", [-1]),
-            vad_filter=VAD_FILTER,
-            vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=300),
-        )
-        segs = list(segments)
-        raw = " ".join(s.text.strip() for s in segs).strip()
-        text = strip_annotations(raw)
-        # Test the pattern, not string inequality: strip_annotations also trims
-        # trailing punctuation, which would otherwise be reported as an
-        # annotation removal and could trip the short-remnant rule below.
-        had_annotation = bool(ANNOTATION_RE.search(raw)) or (
-            len(re.findall(r"[A-Za-z']+", text)) <
-            len(re.findall(r"[A-Za-z']+", raw)))
-        if had_annotation:
-            log.info("row %d: removed sound-effect annotation from %r",
-                     row_id, raw[:60])
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        dur = len(audio) / float(sr)
 
-        if segs:
-            avg_logprob = float(np.mean([s.avg_logprob for s in segs]))
-            no_speech = float(np.mean([s.no_speech_prob for s in segs]))
-        else:
-            avg_logprob, no_speech = None, None
-
-        # A transcript that was nothing but annotation, or is left with a
-        # single stray word after stripping, carried no speech.
-        reason = "sound-effect annotation removed" if had_annotation else None
-        if had_annotation and len(re.findall(r"[a-z']+", text.lower())) < 2:
-            text, reason = "", "nothing but a sound-effect annotation"
-
-        rtf = (time.time() - t0) / max(len(audio) / sr, 1e-6)
-
-        # Independent evidence about the recording, used below to stop the
-        # text-pattern filters discarding a transmission that was plainly
-        # audible. Costs about 0.1% of real time.
+        # Independent evidence that the recording held audible speech. It is
+        # used for one decision only -- whether a silent primary result is
+        # worth a second pass. It never discards anything.
         readable = quality_score(spectral_flatness(audio, sr))
-        readable_ok = readable is not None and readable >= KEEP_ABOVE_QUALITY
+        readable_ok = (readable is None
+                       or readable >= SECOND_PASS_MIN_QUALITY)
 
-        # Default from the decoder's own confidence. Branches below override it
-        # as needed; any branch that does not falls back to this. The previous
-        # arrangement put this at the END of the chain, so a branch that kept
-        # the text without setting status left the variable unassigned and
-        # crashed -- which is exactly what the subtitle-stripping branch did.
-        status = "low" if (
-            (avg_logprob is not None and avg_logprob < LOW_CONF_AVG_LOGPROB)
-            or (no_speech is not None and no_speech > LOW_CONF_NO_SPEECH)
-        ) else "ok"
+        # The home position moves. Re-read it per message so a live fix
+        # resolves hemispheres against where the boat actually is.
+        home = current_home()
+        self.engines.home = (home[0], home[1]) if home else None
 
-        normalized = text.lower().strip(" .!?\u2026")
+        t0 = time.time()
+        res = self.engines.transcribe(audio, sr, readable=readable_ok,
+                                      prompt=self.prompt)
+        rtf = (time.time() - t0) / max(dur, 1e-6)
+
+        # strip_annotations stays: it removes "[MUSIC]" and the like, which
+        # costs nothing and is not a phrase filter. Everything else in the
+        # old chain is gone -- see this patch's docstring for why.
+        text = strip_annotations(res.text)
+
+        reason = "; ".join(res.flags) if res.flags else None
+        if res.positions and res.coord_source not in (None, "none"):
+            # Which engine's digits were kept. Without this the reason line
+            # says a coordinate was contested but not who won it, which is
+            # the first thing you want when checking one against the audio.
+            reason = ("coordinate: %s" % res.coord_source
+                      + ("; " + reason if reason else ""))
+        if res.second_pass:
+            reason = ("second pass: %s" % res.second_reason
+                      + ("; " + reason if reason else ""))
+
         if not text:
-            status, reason = "empty", reason or (
-                "decoder returned nothing" if not raw else reason)
-        elif SUBTITLE_CORPUS.search(text):
-            rest, cut = strip_subtitle_corpus(text)
-            # Two words is enough: "Roger, standing by" is a complete and
-            # useful transmission, and radio traffic is terse by nature.
-            if cut and len(re.findall(r"[a-z0-9']+", rest.lower())) >= 2:
-                # The chain below is elif, so nothing else will look at this
-                # again. Whisper's outro is routinely followed by a token
-                # loop, and that loop is not subtitle boilerplate -- without
-                # this it would survive into the log as the transcript.
-                if looks_like_loop(rest):
-                    shorter, loop_cut = trim_trailing_loop(rest)
-                    if loop_cut and len(
-                            re.findall(r"[a-z0-9']+", shorter.lower())) >= 2:
-                        rest = shorter
-                log.info("row %d: removed subtitle boilerplate, keeping %r",
-                         row_id, rest[:70])
-                reason = "subtitle boilerplate removed from the end"
-                text = rest
-            else:
-                log.info("row %d discarded as subtitle boilerplate: %r",
-                         row_id, text[:70])
-                status, text, reason = "empty", "", "subtitle-corpus hallucination"
-        elif normalized in HALLUCINATION_BLOCKLIST:
-            status, text, reason = "empty", "", "known hallucination phrase"
-        elif numeric_with_repeats(text) and collapse_single_token(text) is None:
-            log.info("row %d: numbers with repeats, flagged unclear: %r",
-                     row_id, text[:50])
+            status = "empty"
+            reason = reason or "decoder returned nothing"
+        elif res.second_reason == "nothing from readable audio":
+            # This transcript came from the second-pass model on audio the
+            # primary heard nothing in, which is exactly the situation where
+            # that model invents. Kept, never presented as reliable.
             status = "low"
-            reason = "repeated numbers -- which was said is not recoverable"
-        elif looks_like_loop(text):
-            single = collapse_single_token(text)
-            if single is not None:
-                log.info("row %d: one token repeated, keeping %r from %r",
-                         row_id, single, text[:50])
-                status = "low"
-                reason = f"single token repeated in {text[:40]!r}"
-                text = single
-                trimmed, cut = None, False
-            else:
-                trimmed, cut = trim_trailing_loop(text)
-                if not cut:
-                    # Exact repetition found nothing; try the drifting kind,
-                    # where only the opening of each sentence repeats.
-                    trimmed, cut = trim_repetitive_tail(text)
-            kept = len(re.findall(r"[a-z0-9']+", (trimmed or "").lower()))
-            if single is not None:
-                pass                      # already handled above
-            # No second looks_like_loop() test on the trimmed text. It was
-            # rejecting salvaged transmissions for repetition that is real:
-            # a USCG broadcast identifies its station several times over, so
-            # "Coast Guard sector Los Angeles" three times is how the message
-            # was actually sent. The trimmer returns "" when the whole
-            # transcript was the loop, which is what separates that from
-            # "Gun, gun, gun" -- so a surviving head of two or more words is
-            # content worth keeping, marked unclear.
-            elif cut and kept >= 2:
-                log.info("row %d: trimmed a trailing loop, keeping %r",
-                         row_id, trimmed[:60])
-                status = "low"
-                reason = f"trailing repetition removed from {text[:40]!r}"
-                text = trimmed
-            elif (readable_ok and not (cut and not trimmed)
-                  and len(re.findall(r"[a-z0-9']+", text.lower())) >= 2):
-                # The repetition is real: broadcasts identify their station
-                # several times over, which is correct radio procedure, and
-                # this recording is clean enough that the words are almost
-                # certainly what was sent. Excluded when the trimmer reported
-                # the WHOLE transcript was one repeated phrase -- that is a
-                # loop however clean the audio.
-                log.info("row %d kept despite repetition, readability %.0f%%: %r",
-                         row_id, readable, text[:60])
-                status = "low"
-                reason = f"repetition kept, audio readable at {readable:.0f}%"
-            else:
-                # Before throwing the transmission away, give the decoder the
-                # escape route the temperature ladder would normally provide.
-                salvaged = self._retry_loop(audio, sr, row_id)
-                if salvaged:
-                    log.info("row %d: re-decode broke the loop %r -> %r",
-                             row_id, text[:40], salvaged[:60])
-                    status, reason = "low", (
-                        f"re-decoded after a loop in {text[:40]!r}")
-                    text = salvaged
-                else:
-                    log.info("row %d discarded as a decoder loop: %r",
-                             row_id, text[:60])
-                    status, text, reason = "empty", "", "decoder repetition loop"
+        elif any("dispute" in f for f in res.flags):
+            status = "low"
+        else:
+            status = "ok"
 
         if text and DISTRESS_RE.search(text):
-            log.warning("row %d on %s contains distress vocabulary -- LISTEN to "
-                        "the recording, do not rely on the transcript: %r",
-                        row_id, os.path.basename(path), text[:100])
+            # Tiered, the same way the web interface tiers its badge.
+            #
+            # Matching the vocabulary alone fired on 13% of all decoded traffic
+            # over 24 hours, almost all of it scheduled securite bulletins,
+            # which buried the real incidents among the weather forecasts.
+            #
+            # A message with NO identified proword is the urgent case, not the
+            # weak one: real distress is worked conversationally -- "vessel
+            # taking on water, what is your current position, over" -- and
+            # carries no preamble at all.
+            if res.proword == "SECURITE":
+                log.info("row %d: routine safety broadcast", row_id)
+            else:
+                log.warning("row %d on %s contains distress vocabulary -- LISTEN "
+                            "to the recording, do not rely on the transcript: %r",
+                            row_id, os.path.basename(path), text[:100])
 
-        rtf = (time.time() - t0) / max(len(audio) / sr, 1e-6)
         backlog = self.jobs.qsize()
         tag = f" backlog={backlog}" if backlog else ""
+        if res.chunks > 1:
+            tag += " chunks=%d" % res.chunks
+        if res.second_pass:
+            tag += " 2nd=%.1fs" % res.second_s
+        if res.proword:
+            tag += " %s" % res.proword
         log.info("row %d [%s] rtf=%.2f%s %s", row_id, status, rtf, tag,
                  text[:100] if text else "(no speech)")
-        self.store.update_transcript(row_id, text, status, avg_logprob, no_speech,
-                                     raw=raw or None, reason=reason, rtf=rtf)
+
+        self.store.update_transcript(
+            row_id, text, status, None, None,
+            raw=res.text or None, reason=reason, rtf=rtf,
+            second=res.second_text, positions=res.positions or None)
+
+        # Give the memory back if the second pass has not been needed lately.
+        self.engines.release_idle()
 
     def stop(self):
         self._stop.set()
@@ -3310,6 +3793,21 @@ class Watchkeeper:
                             "transcribe_channels or remove them here.",
                             ", ".join(repr(n) for n in contradiction))
 
+        # The point of always_transcribe is a lower bar, not the same bar.
+        # If the two floors cross, the priority channels are gated at least
+        # as hard as everything else and the list stops meaning anything.
+        if ALWAYS_MIN_QUALITY >= MIN_TRANSCRIBE_QUALITY > 0:
+            log.warning("always_min_quality (%.0f) is not below "
+                        "min_transcribe_quality (%.0f), so the priority "
+                        "channels are now gated at least as hard as every "
+                        "other channel. always_transcribe no longer buys "
+                        "them anything.",
+                        ALWAYS_MIN_QUALITY, MIN_TRANSCRIBE_QUALITY)
+        elif ALWAYS_MIN_QUALITY > 0:
+            log.info("priority channels decoded above %.0f readability "
+                     "(ordinary floor %.0f)",
+                     ALWAYS_MIN_QUALITY, MIN_TRANSCRIBE_QUALITY)
+
         unknown = [n for n in ALWAYS_TRANSCRIBE
                    if n not in {c.name for c in self.channels}]
         if unknown:
@@ -3348,9 +3846,40 @@ class Watchkeeper:
         self.running = threading.Event()
         self.running.set()
 
+    def _recover_pending(self):
+        """Re-queue work a previous run was interrupted in the middle of.
+
+        Queued at the low tier, so a restart that finds a pile of these does
+        not push live traffic out of a 40-deep queue.
+        """
+        try:
+            rows = self.store.pending_jobs()
+        except Exception as e:                       # noqa: BLE001
+            log.warning("could not look for interrupted transcriptions: %s", e)
+            return
+        queued = lost = 0
+        for row_id, path in rows:
+            if path and os.path.exists(path):
+                self.jobs.put((row_id, path), low=True)
+                queued += 1
+            else:
+                # The recording went with the tmpfs on a reboot, or was pruned
+                # with the message ring. Say so rather than leaving the row
+                # claiming to be in progress.
+                self.store.set_status(
+                    row_id, "interrupted",
+                    reason="the receiver restarted before this was transcribed")
+                lost += 1
+        gone = self.store.close_orphan_history()
+        if queued or lost or gone:
+            log.info("interrupted transcriptions: %d re-queued behind live "
+                     "traffic, %d had no audio left, %d older history row(s) "
+                     "closed", queued, lost, gone)
+
     def run(self):
         if not self.monitor:
             self.transcriber.start()
+            self._recover_pending()
         backoff = 1.0
         while self.running.is_set():
             try:
@@ -3466,6 +3995,24 @@ class Watchkeeper:
                         self._open_thresh = rx.open_noise
 
                 if not self.monitor and time.time() - last_prune > 60:
+                    # Cheap, and the only warning before writes start failing.
+                    # max_messages times the mean recording size has to fit in
+                    # the mount; when the mean grows -- a bigger model, more
+                    # channels, a longer max_message_s -- the ring quietly
+                    # outgrows it.
+                    try:
+                        _st = os.statvfs(AUDIO_DIR)
+                        _used = 1.0 - (_st.f_bavail / float(_st.f_blocks or 1))
+                        if _used > 0.90:
+                            log.warning(
+                                "audio mount %.0f%% full (%.0f MB free). "
+                                "max_messages x mean recording size no longer "
+                                "fits; raise the tmpfs or lower max_messages "
+                                "before writes start failing.",
+                                _used * 100.0,
+                                _st.f_bavail * _st.f_frsize / 1048576.0)
+                    except OSError:
+                        pass
                     self.store.prune()
                     self.store.prune_thermal(THERMAL_HISTORY_DAYS)
                     last_prune = time.time()
@@ -3540,7 +4087,33 @@ class Watchkeeper:
         fname = f"{stamp}_{slug}_{int(time.time()*1000) % 1000:03d}.wav"
         path = os.path.join(AUDIO_DIR, fname)
 
-        sf.write(path, msg.audio, AUDIO_RATE, subtype="PCM_16")
+        try:
+            sf.write(path, msg.audio, AUDIO_RATE, subtype="PCM_16")
+        except Exception as e:          # noqa: BLE001
+            # Deliberately broad. soundfile raises LibsndfileError, which is a
+            # RuntimeError and not an OSError, so a narrower clause here let a
+            # full disk restart the capture session 49 times in one night. Any
+            # failure to write one recording costs that recording and nothing
+            # more, whatever raised it.
+            # Almost always a full audio mount. Drop this one recording and
+            # keep receiving: letting it reach run() restarts the session,
+            # which costs a recalibration and an escalating backoff on top of
+            # the message that was lost anyway.
+            free = "unknown"
+            try:
+                st = os.statvfs(AUDIO_DIR)
+                free = "%.0f MB free of %.0f" % (
+                    st.f_bavail * st.f_frsize / 1048576.0,
+                    st.f_blocks * st.f_frsize / 1048576.0)
+            except OSError:
+                pass
+            log.error("could not write %s (%s): %s -- recording lost, "
+                      "still receiving", os.path.basename(path), free, e)
+            try:
+                os.unlink(path)          # a truncated file helps nobody
+            except OSError:
+                pass
+            return
         row_id = self.store.insert(msg, started_at, path, ctx={
             "preset": self.preset_name,
             "noise_floor_db": self._floor_db,

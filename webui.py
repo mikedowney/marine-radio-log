@@ -17,6 +17,7 @@ to load on a boat with no connectivity, so there are no webfonts or CDN links.
 
 import argparse
 import html
+import gzip
 import json
 import logging
 import io
@@ -174,12 +175,132 @@ class _BadRequest(Exception):
     """Raised by a parse helper that has already sent its own 400."""
 
 
+# Human corrections, one row per corrected message. Owned by the web
+# interface; watchkeeper.py neither reads nor writes it.
+#
+# `original` is the decoder's transcript as it stood when the message was
+# corrected for the FIRST time, and is never updated afterwards: a second edit
+# refines the correction, it does not rewrite what the machine actually said.
+CORRECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS corrections (
+    started_at   TEXT    NOT NULL,
+    channel      TEXT    NOT NULL,
+    text         TEXT    NOT NULL,
+    original     TEXT,
+    msg_id       INTEGER,
+    corrected_at TEXT    NOT NULL,
+    PRIMARY KEY (started_at, channel)
+);
+"""
+
+# Joined on the pair, not on an id. See the module docstring of the patch that
+# introduced this: history has no msg_id column, so (started_at, channel) is
+# the only identity a message keeps once its WAV has aged out of the ring.
+CORR_JOIN = ("  LEFT JOIN corrections k"
+             "    ON k.started_at = {t}.started_at"
+             "   AND k.channel = {t}.channel")
+CORR_COLS = (" k.text AS corrected_text,"
+             " k.original AS original_transcript,"
+             " k.corrected_at AS corrected_at,")
+
+
 class Data:
+    # Every read joins `corrections`, so the table has to exist before the
+    # first query rather than before the first write.
+    _corr_ready = False
+    _corr_lock = threading.Lock()
+
+    # Long enough for the longest hazard bulletin the Coast Guard reads out,
+    # which runs to about 900 characters, with room to spare.
+    CORRECT_MAX = 20000
+
+    def _rw(self):
+        """A short-lived read-write connection, used only for corrections.
+
+        _conn is deliberately read-only so that no page load can ever block
+        the receiver. Corrections are the one thing this interface writes, so
+        they get their own connection with a generous busy timeout instead of
+        making every read path writable.
+
+        The caller closes it. sqlite3's context manager commits but does not
+        close, and a write connection left to the garbage collector is one
+        holding a lock nobody is using.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=15000")
+        return conn
+
+    def _ensure_corrections(self):
+        if Data._corr_ready:
+            return
+        with Data._corr_lock:
+            if Data._corr_ready:
+                return
+            conn = self._rw()
+            try:
+                with conn:
+                    conn.executescript(CORRECTIONS_SCHEMA)
+            finally:
+                conn.close()
+            Data._corr_ready = True
+            log.info("corrections table ready")
+
+    def correct(self, msg_id, text):
+        """Record a human correction for one message.
+
+        Raises LookupError if the message is not in the ring and ValueError if
+        the text is unusable. Returns what was stored, so the page can show
+        exactly what the database now holds rather than what it hoped it sent.
+        """
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("a correction cannot be empty")
+        if len(text) > self.CORRECT_MAX:
+            raise ValueError("a correction is limited to %d characters"
+                             % self.CORRECT_MAX)
+        self._ensure_corrections()
+        conn = self._rw()
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT id, started_at, channel, transcript"
+                    "  FROM messages WHERE id=?", (msg_id,)).fetchone()
+                if row is None:
+                    raise LookupError("message %s is no longer in the log"
+                                      % msg_id)
+                prev = conn.execute(
+                    "SELECT original FROM corrections"
+                    " WHERE started_at=? AND channel=?",
+                    (row["started_at"], row["channel"])).fetchone()
+                original = (prev["original"] if prev
+                            else (row["transcript"] or ""))
+                now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                # original is deliberately absent from the UPDATE: the
+                # machine's reading is captured once and then left for good.
+                conn.execute(
+                    "INSERT INTO corrections (started_at, channel, text,"
+                    " original, msg_id, corrected_at) VALUES (?,?,?,?,?,?)"
+                    " ON CONFLICT(started_at, channel) DO UPDATE SET"
+                    "   text=excluded.text, msg_id=excluded.msg_id,"
+                    "   corrected_at=excluded.corrected_at",
+                    (row["started_at"], row["channel"], text, original,
+                     row["id"], now))
+        finally:
+            conn.close()
+        return {"id": row["id"], "text": text,
+                "original": (original or "").strip() or None,
+                "corrected_at": now}
+
     def __init__(self, db_path, audio_dir):
         self.db_path = db_path
         self.audio_dir = os.path.realpath(audio_dir)
 
     def _conn(self):
+        # Every read below joins `corrections`, and this connection cannot
+        # create it. Done here rather than in __init__ so a webui that starts
+        # before the database exists still comes up.
+        self._ensure_corrections()
         # Read-only, so the watchkeeper's writes are never blocked. WAL lets
         # both processes work at once.
         conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=5)
@@ -189,9 +310,14 @@ class Data:
     def messages(self, limit=100):
         with self._conn() as c:
             rows = c.execute(
-                "SELECT id, channel, freq_hz, started_at, duration_s, snr_db,"
-                " quality, transcript, status, reject_reason FROM messages"
-                " ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
+                "SELECT m.id, m.channel, m.freq_hz, m.started_at,"
+                " m.duration_s, m.snr_db, m.quality, m.transcript, m.status,"
+                " m.reject_reason, m.positions_json,"
+                + CORR_COLS +
+                " m.id AS _id"
+                "  FROM messages m"
+                + CORR_JOIN.format(t="m") +
+                " ORDER BY m.started_at DESC LIMIT ?", (limit,)).fetchall()
         out = []
         for r in rows:
             try:
@@ -211,14 +337,22 @@ class Data:
                 # 0-100 readability. Rows recorded before this column existed
                 # have none, and are never hidden by the filter.
                 "q": (round(r["quality"]) if r["quality"] is not None else None),
-                "text": (r["transcript"] or "").strip(),
+                # The correction is what the row shows. The machine's
+                # reading travels with it rather than being replaced, so the
+                # page can mark the row and the download can carry both.
+                "text": (r["corrected_text"] or r["transcript"] or "").strip(),
+                "corrected": bool(r["corrected_text"]),
+                "original": ((r["original_transcript"] or "").strip() or None
+                             if r["corrected_text"] else None),
                 "status": r["status"],
                 # Why a gated row was never decoded. Only sent when there is
                 # one, so the payload does not grow for ordinary rows.
                 "reason": (r["reject_reason"] if r["status"] == "gated"
                            else None),
                 # Positions the Coast Guard read out, near enough to matter.
-                "pos": wk.positions_in(r["transcript"] or ""),
+                # Preferring the stored one is what puts the second
+                # pass's coordinate on the map.
+                "pos": stored_positions(r),
             })
         return out
 
@@ -251,10 +385,14 @@ class Data:
             return (t.replace("\\", "\\\\").replace("%", "\\%")
                      .replace("_", "\\_"))
 
-        where = ["h.transcript IS NOT NULL", "h.transcript <> ''"]
+        # COALESCE throughout, so correcting a row the decoder gave up on
+        # makes it findable: a message stored as "no speech found" and then
+        # typed in by hand becomes searchable text like any other.
+        where = ["COALESCE(k.text, h.transcript) IS NOT NULL",
+                 "COALESCE(k.text, h.transcript) <> ''"]
         args = []
         for t in terms:
-            where.append("h.transcript LIKE ? ESCAPE '\\'")
+            where.append("COALESCE(k.text, h.transcript) LIKE ? ESCAPE '\\'")
             args.append("%" + esc(t) + "%")
         if channel:
             where.append("h.channel = ?")
@@ -263,15 +401,17 @@ class Data:
 
         with self._conn() as c:
             total = c.execute(
-                "SELECT count(*) FROM history h WHERE " + clause,
+                "SELECT count(*) FROM history h"
+                + CORR_JOIN.format(t="h") + " WHERE " + clause,
                 args).fetchone()[0]
             rows = c.execute(
                 "SELECT h.hid, h.channel, h.freq_hz, h.started_at,"
                 " h.duration_s, h.snr_db, h.quality, h.status, h.transcript,"
-                " m.id AS msg_id"
+                " h.positions_json," + CORR_COLS + " m.id AS msg_id"
                 "  FROM history h"
                 "  LEFT JOIN messages m"
                 "    ON m.started_at = h.started_at AND m.channel = h.channel"
+                + CORR_JOIN.format(t="h") +
                 " WHERE " + clause +
                 " ORDER BY h.started_at DESC LIMIT ?",
                 args + [max(1, min(int(limit), 1000))]).fetchall()
@@ -296,7 +436,7 @@ class Data:
                 "q": (round(r["quality"]) if r["quality"] is not None else None),
                 "status": r["status"],
                 "text": (r["transcript"] or "").strip(),
-                "pos": wk.positions_in(r["transcript"] or ""),
+                "pos": stored_positions(r),
             })
         return {"query": query or "", "terms": terms,
                 "total": total, "shown": len(out), "rows": out}
@@ -310,13 +450,25 @@ class Data:
                 " ORDER BY channel")]
 
 
-    def export_channels(self):
-        """Channel labels present in history, with their request key."""
+    def export_channels(self, hours=None):
+        """Channel labels present in history, with their request key.
+
+        `hours` narrows it to what has been heard recently. A channel that
+        was switched off a week ago is still in history for ever, and
+        offering it as a filter choice that returns nothing is worse than
+        not offering it.
+        """
+        where, args = "", []
+        if hours:
+            where = (" WHERE CAST(strftime('%s', started_at) AS INTEGER)"
+                     " >= CAST(strftime('%s', 'now') AS INTEGER) - ?")
+            args = [int(float(hours) * 3600)]
         with self._conn() as c:
             rows = c.execute(
                 "SELECT channel, COUNT(*) AS n,"
                 "       MIN(started_at) AS first, MAX(started_at) AS last"
-                "  FROM history GROUP BY channel ORDER BY channel").fetchall()
+                "  FROM history" + where +
+                " GROUP BY channel ORDER BY channel", args).fetchall()
         return [{"channel": r["channel"], "key": channel_key(r["channel"]),
                  "messages": r["n"], "first": r["first"], "last": r["last"]}
                 for r in rows]
@@ -368,17 +520,20 @@ class Data:
         joined = ("  FROM history h"
                   "  LEFT JOIN messages m"
                   "    ON m.started_at = h.started_at"
-                  "   AND m.channel = h.channel")
+                  "   AND m.channel = h.channel"
+                  + CORR_JOIN.format(t="h"))
         with self._conn() as c:
             total = c.execute("SELECT COUNT(*)" + joined + clause,
                               args).fetchone()[0]
             rows = c.execute(
                 "SELECT h.hid, h.channel, h.freq_hz, h.started_at,"
                 " h.duration_s, h.snr_db, h.status, h.transcript,"
+                " h.positions_json, h.second_transcript,"
                 " h.reject_reason, h.quality, h.gain_db, h.rtf,"
                 " h.soc_temp_c, h.thermal_wait_s, h.preset,"
                 " h.noise_floor_db, h.norm_gain, h.peak_pre_limit,"
-                " h.archived_at, m.id AS msg_id, m.audio_path AS audio_path"
+                " h.archived_at," + CORR_COLS +
+                " m.id AS msg_id, m.audio_path AS audio_path"
                 + joined + clause +
                 " ORDER BY h.started_at " + direction + ", h.hid " + direction +
                 " LIMIT ?", args + [limit]).fetchall()
@@ -410,7 +565,13 @@ class Data:
                 "snr_db": num(r["snr_db"], 1),
                 "quality": num(r["quality"], 1),
                 "status": r["status"],
-                "transcript": text or None,
+                "transcript": ((r["corrected_text"] or "").strip()
+                               or text or None),
+                "corrected": bool(r["corrected_text"]),
+                "original_transcript": ((r["original_transcript"] or "").strip()
+                                        or None
+                                        if r["corrected_text"] else None),
+                "corrected_at": r["corrected_at"],
                 "reject_reason": r["reject_reason"],
                 # Receive-chain and decode telemetry. These are the columns
                 # that make the export worth having over the live /api/messages
@@ -431,7 +592,10 @@ class Data:
                 "audio_available": bool(r["audio_path"]),
             }
             if with_positions:
-                item["positions"] = wk.positions_in(text)
+                # The brief and its KML read this. Supplying the
+                # adjudicated coordinate is the whole point of running
+                # a second pass on position-bearing traffic.
+                item["positions"] = stored_positions(r)
             out.append(item)
         return {"total": total, "returned": len(out), "limit": limit,
                 "truncated": total > len(out), "order": direction.lower(),
@@ -490,8 +654,10 @@ class Data:
         with self._conn() as c:
             # SELECT * so columns added by a later migration appear without
             # this query needing to be edited in step.
-            row = c.execute("SELECT * FROM messages WHERE id=?",
-                            (msg_id,)).fetchone()
+            row = c.execute(
+                "SELECT m.*," + CORR_COLS.rstrip(",") +
+                "  FROM messages m" + CORR_JOIN.format(t="m") +
+                " WHERE m.id=?", (msg_id,)).fetchone()
         return row
 
     def audio_path(self, msg_id):
@@ -524,13 +690,46 @@ def home_info():
             "label": wk.format_position(lat, lon)}
 
 
-def _positions_block(transcript):
+def stored_positions(row):
+    """The coordinate the transcriber settled on, else parse the transcript.
+
+    positions_json is the only place the second pass's answer survives. The
+    transcript on display is the PRIMARY engine's, so re-parsing it here
+    throws away precisely the coordinate the second pass was run to recover:
+    on 23 Oct a Ch22A hazard broadcast was stored as 32-33.300N 117-11.000W
+    from the second pass while the primary had mangled the readback beyond
+    parsing, and the map showed nothing.
+
+    NULL on every row written before 23 Oct 2026 and on every row that never
+    went to a second pass, so parsing remains the fallback and the archive
+    behaves exactly as it did.
+    """
+    raw = None
+    try:
+        raw = row["positions_json"]
+    except (KeyError, IndexError):
+        pass                       # a query that does not select the column
+    if raw:
+        try:
+            got = json.loads(raw)
+            if isinstance(got, list) and got:
+                return got
+        except (ValueError, TypeError):
+            pass                   # corrupt JSON is not worth a 500
+    try:
+        text = row["transcript"] or ""
+    except (KeyError, IndexError):
+        text = ""
+    return wk.positions_in(text)
+
+
+def _positions_block(row):
     """Positions read out in the message, for the exported text file.
 
     Written as degrees and decimal minutes the way they were transmitted, plus
     a link, so the file is useful on its own when it is mailed to someone.
     """
-    found = wk.positions_in(transcript)
+    found = stored_positions(row)
     if not found:
         return ""
     out = "\nPOSITION\n"
@@ -632,12 +831,17 @@ def analyse(path):
     return "\n".join(out) + "\n"
 
 
-def build_bundle(row, audio_file):
-    """One zip holding the recording and its transcript.
+def bundle_note(row, audio_file):
+    """The stem and the plain-text note for one message.
 
-    A zip rather than two downloads: mobile browsers commonly block the second
-    of two downloads from one gesture, and the pair is only useful together --
-    the transcript is an index into the audio, not a substitute for it.
+    Split out of build_bundle so a multi-message zip can reuse it: the note is
+    the part worth keeping, and building it twice -- once for the single
+    download and once for the archive -- is how the two drift apart.
+
+    audio_file may be None, which is the ordinary state of an older message:
+    the WAV is pruned from the ring long before the row leaves the database.
+    The note is still worth having, so it is written with the analysis section
+    saying the recording is gone rather than being refused outright.
     """
     try:
         started = datetime.fromisoformat(row["started_at"])
@@ -658,7 +862,12 @@ def build_bundle(row, audio_file):
             return default
 
     snr = f"{row['snr_db']:.1f} dB" if row["snr_db"] is not None else "unknown"
-    text = (row["transcript"] or "").strip()
+    corrected = ""
+    try:
+        corrected = (row["corrected_text"] or "").strip()
+    except (IndexError, KeyError):
+        pass                       # a query that does not select the column
+    text = corrected or (row["transcript"] or "").strip()
     if not text:
         gated = g("reject_reason") or ""
         text = {"pending": "(not yet transcribed)",
@@ -702,7 +911,7 @@ def build_bundle(row, audio_file):
         + line("Peak before limiter", f"{peak:.3f}" if peak else None)
         + line("Normalisation gain", f"{ngain:.2f}x" if ngain else None)
         + line("Crest factor", crest)
-        + _positions_block(row["transcript"] or "")
+        + _positions_block(row)
         + "\nTRANSCRIPTION\n"
         + line("Confidence", row["status"])
         + line("avg_logprob", f"{g('avg_logprob'):.2f}"
@@ -715,15 +924,77 @@ def build_bundle(row, audio_file):
         + line("Decode held for", (f"{g('thermal_wait_s'):.0f} s (thermal)"
                                    if g("thermal_wait_s") else None))
         + line("Discarded because", g("reject_reason"))
+        # Said plainly, because the TRANSCRIPT block below is the corrected
+        # text: an archive that did not say so would be a transcript
+        # attributed to a decoder that never produced it.
+        + line("Corrected by hand", g("corrected_at") if corrected else None)
+        + line("Decoder had", repr((g("original_transcript") or "").strip())
+               if corrected else None)
         + line("Decoder said", repr(g("raw_transcript"))
                if g("raw_transcript") and g("raw_transcript") != row["transcript"]
                else None)
+        # Both readings, when the two engines were run. They disagree in
+        # useful ways -- the primary reads prose better, the second pass
+        # reads digits better -- and seeing them together is what makes a
+        # contested coordinate checkable without a SQL query.
+        + line("Second pass said", repr(g("second_transcript"))
+               if g("second_transcript") else None)
         + "\nAUDIO ANALYSIS\n"
-        + analyse(audio_file)
+        + (analyse(audio_file) if audio_file else
+           "  recording no longer on disk -- pruned from the ring\n")
         + "\nTRANSCRIPT\n"
         + f"  {text}\n"
     )
 
+    return stem, note
+
+
+def _multi_entry(row, audio_file, stem):
+    """One message as a summary.json entry.
+
+    Deliberately the adjudicated position rather than a re-parse of the
+    displayed transcript: stored_positions prefers what the second pass
+    settled on, which is the whole reason the second pass runs.
+    """
+    def g(key, default=None):
+        try:
+            return row[key]
+        except (IndexError, KeyError):
+            return default
+
+    return {
+        "id": row["id"],
+        "channel": row["channel"],
+        "mhz": round((row["freq_hz"] or 0) / 1e6, 3),
+        "started_at": row["started_at"],
+        "duration_s": round(row["duration_s"] or 0, 1),
+        "snr_db": (round(row["snr_db"], 1)
+                   if row["snr_db"] is not None else None),
+        "quality": (round(g("quality")) if g("quality") is not None else None),
+        "status": row["status"],
+        "reject_reason": g("reject_reason"),
+        "transcript": ((g("corrected_text") or "").strip()
+                       or (row["transcript"] or "").strip() or None),
+        "corrected": bool((g("corrected_text") or "").strip()),
+        "original_transcript": ((g("original_transcript") or "").strip() or None
+                                if (g("corrected_text") or "").strip()
+                                else None),
+        "corrected_at": g("corrected_at"),
+        "second_transcript": g("second_transcript"),
+        "positions": stored_positions(row),
+        "note": "%s.txt" % stem,
+        "audio": ("%s.wav" % stem) if audio_file else None,
+    }
+
+
+def build_bundle(row, audio_file):
+    """One zip holding the recording and its transcript.
+
+    A zip rather than two downloads: mobile browsers commonly block the second
+    of two downloads from one gesture, and the pair is only useful together --
+    the transcript is an index into the audio, not a substitute for it.
+    """
+    stem, note = bundle_note(row, audio_file)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(audio_file, f"{stem}.wav")
@@ -802,6 +1073,14 @@ PAGE = r"""<!DOCTYPE html>
     --text:    #DCE7EA;
     --dim:     #7C949D;
     --dimmer:  #55696F;
+    /* Both were used below and defined nowhere, which makes the whole
+       declaration invalid rather than merely wrong: the property keeps its
+       inherited value and the rule does nothing. .posout.bad and
+       .poshome.stale are the coordinate box's error and staleness states,
+       so a failed parse has been rendering as though it succeeded. Values
+       match the search and brief pages. */
+    --accent:  #7FB2C4;
+    --warn:    #C9A227;
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
@@ -847,6 +1126,17 @@ PAGE = r"""<!DOCTYPE html>
     align-self: center; flex: none;
   }
   .chip.hot { background: #D9776A; color: #17231F; }
+  /* Loud on purpose. This is the one thing on the page that should pull your
+     eye away from whatever you were reading. */
+  .chip.alarm {
+    background: #C62828; color: #FFF; font-weight: 600; border: 0;
+    font-family: inherit; cursor: pointer;
+    animation: distressPulse 2s ease-in-out infinite;
+  }
+  @keyframes distressPulse { 50% { opacity: .5; } }
+  @media (prefers-reduced-motion: reduce) {
+    .chip.alarm { animation: none; }
+  }
 
   /* Health sits at the top of the panel: it is the thing you open the panel
      to check when something feels slow. */
@@ -977,6 +1267,9 @@ PAGE = r"""<!DOCTYPE html>
   }
   .row.flagged { background: rgba(140,59,50,.10); }
   .row.flagged .bar { background: #D9776A !important; }
+  /* After .playing and .flagged so a selected row still reads as selected
+     while it is playing or flagged: equal specificity, source order decides. */
+  .row.picked { background: rgba(127,178,196,.15); }
   .text { font-size: 15px; line-height: 1.35; }
   .text.quiet { color: var(--dimmer); font-style: italic; }
   .text.low::after {
@@ -1009,7 +1302,37 @@ PAGE = r"""<!DOCTYPE html>
     font-family:inherit; }
   .links a:hover, .links button:hover {
     color:var(--text); border-color:var(--dim); }
-  .links button { margin-left:auto; }
+  /* Only this one. The rule used to apply to every button in the row, so
+     adding one pushed the space between them instead of to the right. */
+  .links #toTop { margin-left:auto; }
+  .links button.on { color:var(--text); border-color:var(--dim); }
+  .links button:disabled { opacity:.45; cursor:default; }
+  .links button:disabled:hover { color:var(--dim); border-color:var(--rule); }
+  /* The checkbox takes the download glyph's place in the same cell, so the
+     column does not reflow when select mode turns on. */
+  .sel { width:30px; height:26px; display:flex; align-items:center;
+    justify-content:center; }
+  .sel input { width:17px; height:17px; margin:0; cursor:pointer;
+    accent-color:#7FB2C4; }
+  button.corr {
+    font:inherit; font-size:11px; letter-spacing:.02em; white-space:nowrap;
+    color:var(--dim); background:none; border:1px solid var(--rule);
+    border-radius:6px; padding:3px 7px; cursor:pointer; }
+  button.corr:hover { color:var(--text); border-color:var(--dim); }
+  button.corr.on { color:#101A1F; background:#7FB2C4; border-color:#7FB2C4; }
+  button.corr:disabled { opacity:.5; cursor:default; }
+  .edit {
+    width:100%; min-height:76px; resize:vertical; display:block;
+    font:inherit; font-size:14px; line-height:1.45;
+    color:var(--text); background:var(--ground);
+    border:1px solid var(--dim); border-radius:7px; padding:6px 8px; }
+  .edit:focus { outline:none; border-color:#7FB2C4; }
+  .correrr:not(:empty) { margin-top:5px; font-size:12px; color:#D9776A; }
+  /* Marks a row whose text a person typed, so a transcript is never silently
+     attributed to the decoder. */
+  .corrmark { font-size:10px; letter-spacing:.07em; color:var(--dim);
+    border:1px solid var(--rule); border-radius:4px; padding:0 3px;
+    margin-left:6px; vertical-align:1px; }
 
   /* Channel list inside the panel: one tappable row each, wide enough to hit
      with a thumb, two columns when there is room. */
@@ -1086,6 +1409,8 @@ PAGE = r"""<!DOCTYPE html>
     <summary>
       <span class="brand"><h1>{{STATION}}</h1><span class="pip" id="pip"></span></span>
       <span class="chip hot" id="hotChip" hidden>THROTTLED</span>
+      <button type="button" class="chip alarm" id="distressChip" hidden
+              aria-label="Active distress traffic, jump to it"></button>
       <span class="chip" id="autoChip" hidden>AUTO</span>
       <span class="stats" id="stats">connecting</span>
       <span class="chev"></span>
@@ -1095,14 +1420,14 @@ PAGE = r"""<!DOCTYPE html>
       <div id="warnings"></div>
       <div class="controls">
         <div class="ctl threshold">
-          <input type="range" id="snrCut" min="0" max="90" step="5" value="0"
+          <input type="range" id="snrCut" min="0" max="90" step="5" value="65"
                  aria-label="Minimum signal-to-noise ratio to show">
-          <span class="cut off" id="cutLabel">Quality all</span>
+          <span class="cut" id="cutLabel">Quality &ge; 65%</span>
         </div>
         <div class="ctl threshold">
-          <input type="range" id="durCut" min="0" max="10" step="0.5" value="0"
+          <input type="range" id="durCut" min="0" max="10" step="0.5" value="2"
                  aria-label="Minimum message length to show">
-          <span class="cut off" id="durLabel">Any length</span>
+          <span class="cut" id="durLabel">&ge; 2s</span>
         </div>
         <button class="toggle" id="hideEmpty" aria-pressed="false">Show All</button>
         <button class="toggle" id="autoplay" aria-pressed="false">AutoPlay Off</button>
@@ -1122,8 +1447,11 @@ PAGE = r"""<!DOCTYPE html>
         <a href="/search">Search</a>
         <a href="/brief">AI brief</a>
         <a href="/export">Export</a>
-        <a href="/report">Thermal report</a>
+        {{THERMAL_LINK}}
         <a href="/docs">Operator guide</a>
+        <button type="button" id="corrBtn">Correct text</button>
+        <button type="button" id="multiBtn">Download multi</button>
+        <button type="button" id="multiGo" hidden>Download</button>
         <button type="button" id="toTop">Top of log</button>
       </div>
     </div>
@@ -1152,11 +1480,19 @@ const panel = document.getElementById('panel');
 const healthEl = document.getElementById('health');
 const warnEl = document.getElementById('warnings');
 const hotChip = document.getElementById('hotChip');
+const distressChip = document.getElementById('distressChip');
 
 let msgs = [], shown = [], unmutedShown = [], channels = [], colors = {},
     skew = 0, playing = null, lastOk = 0;
 let hideEmpty = false, autoplay = false;
-let muted = new Set();            // channels switched off from the legend
+// Channels a first-time visitor has switched off. Working traffic -- port
+// operations, calling, recreation -- is most of the volume and least of the
+// interest to someone who has just been sent the link. Anyone can tap a
+// channel in the legend to switch it back on, and their choice is remembered
+// from then on. Names not present in the active preset are ignored.
+const DEFAULT_MUTED = ["Ch68 Recreation", "Ch09 Calling",
+                       "Ch69 Recreation", "Ch12 Port Ops"];
+let muted = new Set(DEFAULT_MUTED);   // channels switched off from the legend
 let seenIds = null;               // ids known at the last poll
 let playQueue = [];
 
@@ -1232,7 +1568,60 @@ const noSpeech = m => !m.text && (m.status === 'empty' || m.status === 'error');
 
 // Mirrors DISTRESS_RE in the watchkeeper.
 const DISTRESS = /\bmay ?day\b|\bpan[ -]?pan\b|\bsecurit[ae]\b|\bseelonce\b|\bdistress\b|\bsinking\b|\babandon(?:ing)? ship\b|\bman overboard\b|\btaking on water\b|\bemergency\b/i;
-const flagged = m => !!m.text && DISTRESS.test(m.text);
+// The canonical spellings the proword layer writes. Case-sensitive on
+// purpose: a lower-case "securite" means the layer was not confident enough
+// to canonicalise it, and that uncertainty should reach you, not be filtered.
+const ROUTINE_PW = /\bSECURITE\b/;
+const URGENT_PW = /\bPAN PAN\b|\bMAYDAY\b/;
+
+// Worth interrupting someone for.
+//
+// Distress vocabulary alone put the badge on 105 of 411 messages in a day,
+// 86 of them scheduled weather bulletins. Tiering on the canonical proword
+// cuts that to 19 while keeping the case that matters: distress worked
+// conversationally, with no proword at all. All three real incidents on
+// 25 Oct read that way.
+const flagged = m => {
+  if (!m.text) return false;
+  if (URGENT_PW.test(m.text)) return true;
+  if (ROUTINE_PW.test(m.text)) return false;
+  return DISTRESS.test(m.text);
+};
+
+// How long an incident stays in the header after its last transmission.
+const DISTRESS_WINDOW_S = 1800;
+let distressActive = null;
+
+function drawDistress(now) {
+  let newest = null;
+  for (const m of msgs) {
+    if (!flagged(m)) continue;
+    // m.started > now looks impossible, but skew is an estimate and a
+    // message can land a fraction ahead of the local clock. Without this the
+    // window is open-ended into the future: every urgent message in the list
+    // counts from the moment the page loads, and the age renders negative.
+    if (m.started > now || now - m.started > DISTRESS_WINDOW_S) continue;
+    if (!newest || m.started > newest.started) newest = m;
+  }
+  distressChip.hidden = !newest;
+  distressActive = newest ? newest.id : null;
+  if (newest) {
+    distressChip.textContent = 'DISTRESS · ' + ago(now - newest.started);
+  }
+}
+
+distressChip.addEventListener('click', e => {
+  // The chip sits inside <summary>, where any click opens the panel and
+  // would push the log down the page just as you asked to be taken to it.
+  e.preventDefault();
+  e.stopPropagation();
+  if (distressActive === null) return;
+  // Clearing jumpDone matters when the hash is already this id: assigning
+  // the same value fires no hashchange, so a second click would do nothing.
+  jumpDone = null;
+  location.hash = '#m' + distressActive;
+  maybeJump();
+});
 
 // Arriving from the search page as /#m<id>: show that row and scroll to it.
 //
@@ -1343,6 +1732,14 @@ function body(m) {
 
 function render() {
   applyFilters();
+  // What you see is what you get: a row hidden by a filter, or aged out of
+  // the ring, leaves the selection rather than riding along invisibly into
+  // the zip. Cheap -- the selection is small and this runs on poll.
+  if (selMode && picked.size) {
+    const live = new Set(shown.map(m => m.id));
+    for (const id of [...picked]) if (!live.has(id)) picked.delete(id);
+    paintMulti();
+  }
   if (!shown.length) {
     log.innerHTML = msgs.length
       ? '<div class="empty">Every message is hidden by the filters above.</div>'
@@ -1354,7 +1751,8 @@ function render() {
   for (const m of shown) {
     const el = document.createElement('div');
     el.className = 'row' + (playing === m.id ? ' playing' : '')
-                         + (flagged(m) ? ' flagged' : '');
+                         + (flagged(m) ? ' flagged' : '')
+                         + (selMode && picked.has(m.id) ? ' picked' : '');
     el.tabIndex = 0;
     el.dataset.id = m.id;
     el.dataset.started = m.started;
@@ -1363,19 +1761,41 @@ function render() {
       `<div class="bar" style="background:${colors[m.channel] || '#55696F'}"></div>
        <div><div class="age"></div><div class="meta">${m.duration.toFixed(1)}s</div></div>
        <div><div class="chan">${esc(m.channel)}${snr(m)}${
-            flagged(m) ? '<span class="verify">LISTEN</span>' : ''}</div>
-            <div class="${b.cls}">${esc(b.txt)}</div></div>
-       <div class="acts">${pin(m)}
-       <a class="dl" href="/download/${m.id}" download
-          title="Download recording and transcript"
-          aria-label="Download recording and transcript">
-         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
-              stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-           <path d="M8 1.5v8.5M4.5 7L8 10.5 11.5 7M2 13.5h12"/>
-         </svg></a></div>`;
+            flagged(m) ? '<span class="verify">LISTEN</span>' : ''}${
+            m.corrected ? '<span class="corrmark">EDITED</span>' : ''}</div>
+            ${bodyCell(m, b)}</div>
+       <div class="acts">${pin(m)}${dlCell(m)}</div>`;
     el.addEventListener('click', () => play(m.id));
     // The row plays; the button downloads. Without this the tap would do both.
-    el.querySelector('.dl').addEventListener('click', e => e.stopPropagation());
+    // Guarded because in select mode the cell holds a checkbox instead.
+    const dlEl = el.querySelector('.dl');
+    if (dlEl) dlEl.addEventListener('click', e => e.stopPropagation());
+    const corrEl = el.querySelector('button.corr');
+    if (corrEl) {
+      corrEl.addEventListener('click', e => {
+        e.stopPropagation();
+        if (editing === m.id) submitEdit(m, el);
+        else { editing = m.id; render(); focusEditor(); }
+      });
+    }
+    const edEl = el.querySelector('.edit');
+    if (edEl) {
+      // The row plays on click, so every gesture inside the editor has to be
+      // kept from reaching it -- including selecting text with the mouse.
+      for (const ev of ['click', 'mousedown', 'keydown', 'dblclick']) {
+        edEl.addEventListener(ev, e => e.stopPropagation());
+      }
+      edEl.addEventListener('input', () => drafts.set(m.id, edEl.value));
+    }
+    const cbEl = el.querySelector('.sel input');
+    if (cbEl) {
+      cbEl.addEventListener('click', e => e.stopPropagation());
+      cbEl.addEventListener('change', () => {
+        if (cbEl.checked) picked.add(m.id); else picked.delete(m.id);
+        el.classList.toggle('picked', cbEl.checked);
+        paintMulti();
+      });
+    }
     const pn = el.querySelector('.pin');
     if (pn) pn.addEventListener('click', e => e.stopPropagation());
     el.addEventListener('keydown', e => {
@@ -1440,6 +1860,8 @@ function tick() {
   }
   const since = (Date.now() / 1000) - lastOk;
   pip.classList.toggle('stale', lastOk > 0 && since > 20);
+  // Once a second, so the age on the chip stays honest without a second timer.
+  drawDistress(now);
   drawStats();
 }
 
@@ -1531,7 +1953,12 @@ async function poll() {
                                 m.status !== msgs[i].status ||
                                 m.text !== msgs[i].text);
     msgs = d.messages;
-    if (changed) { render(); drawLegend(); } else { applyFilters(); drawStats(); }
+    // A render rebuilds every row, which would throw away the textarea the
+    // user is typing into -- and a new message arrives every few minutes.
+    // Held until the editor closes.
+    if (changed && editing !== null) { pendingRender = true; }
+    else if (changed) { render(); drawLegend(); }
+    else { applyFilters(); drawStats(); }
     maybeJump();
 
     if (autoplay && fresh.length) {
@@ -1612,6 +2039,151 @@ for (const el of [snrCut, durCut]) {
   el.addEventListener('input', () => { saveFilters(); render(); drawLegend(); });
 }
 
+// ---- multi-message download ------------------------------------------
+// Select mode replaces each row's download glyph with a checkbox rather than
+// adding a column, so the layout is identical in both modes and a row that
+// was reachable by thumb stays reachable.
+let selMode = false;
+const picked = new Set();
+const multiBtn = document.getElementById('multiBtn');
+const multiGo = document.getElementById('multiGo');
+
+// ---- manual correction ------------------------------------------------
+// The decoder is good and not perfect, and a transcript nobody can fix is a
+// transcript that stays wrong. What is typed here goes to a table of its own:
+// the machine's reading is kept beside it, never replaced.
+let editMode = false;
+let editing = null;          // the id whose editor is open, or null
+let pendingRender = false;   // a poll-driven render held back by that editor
+const drafts = new Map();    // unsaved text, per id, so switching rows is safe
+const corrBtn = document.getElementById('corrBtn');
+
+function bodyCell(m, b) {
+  if (!(editMode && editing === m.id)) {
+    return `<div class="${b.cls}">${esc(b.txt)}</div>`;
+  }
+  const cur = drafts.has(m.id) ? drafts.get(m.id) : (m.text || '');
+  return `<textarea class="edit" spellcheck="false"
+            aria-label="Corrected transcript">${esc(cur)}</textarea>
+          <div class="correrr"></div>`;
+}
+
+function corrCell(m) {
+  const open = editing === m.id;
+  return `<button type="button" class="corr${open ? ' on' : ''}"
+            title="${open ? 'Save this text to the log'
+                          : 'Correct this transcript'}">${
+            open ? 'Update' : 'Correct'}</button>`;
+}
+
+function focusEditor() {
+  const t = log.querySelector('.edit');
+  if (!t) return;
+  t.focus();
+  t.setSelectionRange(t.value.length, t.value.length);
+}
+
+function paintCorrect() {
+  corrBtn.classList.toggle('on', editMode);
+  // Pressing it again cancels, so the label says so rather than naming the
+  // state -- the same reasoning as Cancel Download.
+  corrBtn.textContent = editMode ? 'Cancel Correction' : 'Correct text';
+}
+
+function endCorrect() {
+  editMode = false; editing = null; drafts.clear();
+  pendingRender = false;
+  paintCorrect(); render(); drawLegend();
+}
+
+async function submitEdit(m, el) {
+  const t = el.querySelector('.edit');
+  if (!t) return;
+  const err = el.querySelector('.correrr');
+  const btn = el.querySelector('button.corr');
+  const text = t.value;
+  btn.disabled = true; btn.textContent = 'Saving';
+  if (err) err.textContent = '';
+  try {
+    const r = await fetch('/api/correct', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: m.id, text: text}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    // What the database now holds, not what we hoped we sent.
+    m.text = d.text;
+    m.corrected = true;
+    m.original = d.original;
+    drafts.delete(m.id);
+    editing = null;
+    pendingRender = false;
+    render(); drawLegend();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Update';
+    // Left open with the text still in it: the correction is not lost just
+    // because the write failed.
+    if (err) err.textContent = 'not saved \u2014 ' + e.message;
+  }
+}
+
+corrBtn.addEventListener('click', () => {
+  if (editMode) { endCorrect(); return; }
+  if (selMode) { selMode = false; picked.clear(); paintMulti(); }
+  editMode = true; editing = null;
+  paintCorrect(); render();
+});
+
+function dlCell(m) {
+  if (editMode) return corrCell(m);
+  if (!selMode) {
+    return `<a class="dl" href="/download/${m.id}" download
+          title="Download recording and transcript"
+          aria-label="Download recording and transcript">
+         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+              stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M8 1.5v8.5M4.5 7L8 10.5 11.5 7M2 13.5h12"/>
+         </svg></a>`;
+  }
+  return `<span class="sel"><input type="checkbox"
+            ${picked.has(m.id) ? 'checked' : ''}
+            aria-label="Select this message to download"></span>`;
+}
+
+function paintMulti() {
+  multiBtn.classList.toggle('on', selMode);
+  // Pressing it again cancels, so the label says so rather than describing
+  // the state. There is no separate Cancel button: it did nothing this one
+  // did not already do.
+  multiBtn.textContent = selMode ? 'Cancel Download' : 'Download multi';
+  multiGo.hidden = !selMode;
+  multiGo.disabled = picked.size === 0;
+  multiGo.textContent = picked.size ? `Download (${picked.size})` : 'Download';
+}
+
+function endSelect() {
+  selMode = false; picked.clear(); paintMulti(); render();
+}
+
+multiBtn.addEventListener('click', () => {
+  if (selMode) { endSelect(); return; }
+  if (editMode) { editMode = false; editing = null; drafts.clear();
+                  paintCorrect(); }
+  selMode = true;
+  // The panel stays open deliberately. Download and Cancel are inside it, so
+  // closing it hid the two controls this mode exists to reach.
+  paintMulti(); render();
+});
+
+multiGo.addEventListener('click', () => {
+  if (!picked.size) return;
+  const ids = [...picked].sort((a, b) => a - b);
+  location.href = '/download/multi?ids=' + ids.join(',');
+  // The selection is left standing. A download that failed gets retried, and
+  // reselecting twenty rows by hand is not a recovery path.
+});
+
 // The panel lives in a sticky header, so this is reachable from anywhere in
 // the log. Closing it afterwards gets the list back under the thumb.
 document.getElementById('toTop').addEventListener('click', () => {
@@ -1642,6 +2214,8 @@ autoplayBtn.addEventListener('click', () => {
 panel.addEventListener('toggle', saveFilters);
 
 paintToggles();
+paintMulti();
+paintCorrect();
 applyFilters();
 
 poll();
@@ -2701,35 +3275,87 @@ AI_DEFAULTS = {
     # Gemini only, and the biggest latency lever on a flash model: 0 turns
     # thinking off. -1 leaves it to the model.
     "thinking_budget": -1,
+    # Re-joining transmissions the receiver cut at max_message_s. A segment
+    # must itself be at least stitch_min_duration_s long -- a short message is
+    # a whole message, not a truncated one -- and the next must start within
+    # stitch_gap_s of its end, on the same channel. 0 disables stitching.
+    "stitch_gap_s": 3.0,
+    "stitch_min_duration_s": 85.0,
+    # This boat's name, as it would be spoken on the radio. Anything a
+    # transmission says that matches it is the most important thing in the
+    # brief. Blank disables the rule rather than matching everything.
+    "vessel_name": "",
 }
+
+# What the page's time dropdown offers. Anything in this range is accepted;
+# the list is only what the dropdown shows.
+BRIEF_HOURS = (1, 6, 12, 24, 48)
 
 # What a safety brief actually reads. The export carries every history column
 # because an analyst might want gain_db or rtf; a language model asked about
 # vessels in distress will not, and each unused field is paid for twice --
 # once in tokens and once in the minutes the model spends reading them.
 BRIEF_FIELDS = ("hid", "channel", "started_at", "duration_s", "snr_db",
-                "quality", "status", "transcript", "clip_url")
+                "quality", "status", "transcript", "clip_url", "positions")
+
+# Added by group_segments() when a transmission was split, so they survive the
+# field whitelist above.
+GROUP_FIELDS = ("group", "part", "parts")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def ai_config():
-    """The [ai] block, re-read each time so edits need no restart."""
-    cfg = dict(AI_DEFAULTS)
+# What the interface shows. Separate from [ai], which is about the brief.
+WEB_DEFAULTS = {
+    # The thermal report: the header link, the /report page and the
+    # /api/thermal series it reads. True was the only behaviour before this
+    # setting existed, so that is the default -- a page that disappeared of
+    # its own accord on upgrade would be the worse surprise.
+    #
+    # This governs the REPORT, not the sampling. The thermal table is filled
+    # by watchkeeper.py on its own schedule (thermal_sample_s), and pruned on
+    # its own schedule (thermal_history_days); turning the report off leaves
+    # both running, so the history is there if the page is ever wanted back.
+    "thermal_report": True,
+}
+
+
+def _toml_block(name, defaults):
+    """One table from the config file, laid over the given defaults.
+
+    Re-read on every call rather than cached, so an edit to watchkeeper.toml
+    takes effect on the next request instead of needing a restart.
+    """
+    cfg = dict(defaults)
     path = wk.find_config(None)
     if path:
         try:
             with open(path, "rb") as f:
                 import tomllib
-                body = tomllib.load(f).get("ai", {})
+                body = tomllib.load(f).get(name, {})
             for k, v in body.items():
                 if k in cfg:
                     cfg[k] = v
                 else:
-                    log.warning("[ai] %s is not a setting I know; ignored", k)
+                    log.warning("[%s] %s is not a setting I know; ignored",
+                                name, k)
         except Exception as e:                      # noqa: BLE001
-            log.warning("could not read [ai] from %s: %s", path, e)
+            log.warning("could not read [%s] from %s: %s", name, path, e)
     return cfg
+
+
+def ai_config():
+    """The [ai] block, re-read each time so edits need no restart."""
+    return _toml_block("ai", AI_DEFAULTS)
+
+
+def web_config():
+    """The [web] block: what the interface offers."""
+    return _toml_block("web", WEB_DEFAULTS)
+
+
+def thermal_report_on():
+    return bool(web_config().get("thermal_report", True))
 
 
 def provider_of(cfg):
@@ -2821,8 +3447,57 @@ def sanitize_fragment(html_text):
     return out.strip()
 
 
+# XML defines these five and no others. Everything else in HTML's entity set
+# -- &mdash;, &nbsp;, &deg;, &amp;rsquo; -- is undefined in XML, and one of
+# them anywhere in the document makes Google Earth reject the file outright.
+_XML_ENTITIES = {"amp", "lt", "gt", "apos", "quot"}
+_ENTITY_RE = re.compile(r"&(#\d+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+_BARE_AMP_RE = re.compile(
+    r"&(?!(?:#\d+|#[xX][0-9a-fA-F]+|amp|lt|gt|apos|quot);)")
+
+
+def xml_safe_entities(text):
+    """Make HTML entity usage legal in XML, without touching valid markup.
+
+    Named entities XML does not know become the characters they stand for;
+    numeric references and the five XML names are untouched; an unrecognised
+    name and any other bare ampersand are escaped so they render as text
+    rather than killing the parse.
+    """
+    import html.entities
+
+    def one(m):
+        name = m.group(1)
+        if name.startswith("#") or name in _XML_ENTITIES:
+            return m.group(0)
+        cp = html.entities.name2codepoint.get(name)
+        return chr(cp) if cp is not None else m.group(0)
+
+    return _BARE_AMP_RE.sub("&amp;", _ENTITY_RE.sub(one, text or ""))
+
+
 KML_OPEN = "<<<KML>>>"
 KML_CLOSE = "<<<END KML>>>"
+
+
+# A tag name may legally contain a colon -- that is how namespaces are
+# written -- but not end in one, because the local part would be empty.
+# Models produce exactly that: <scale:>1.0</scale>. Matching only a colon
+# that sits immediately before whitespace, a slash or the bracket means a
+# real prefix like <gx:Track> cannot be touched.
+_KML_EMPTY_NS = re.compile(r"(<\/?[A-Za-z_][A-Za-z0-9_.\-]*):(?=[\s/>])")
+
+
+def repair_kml(raw):
+    """Mechanically broken KML, made parseable. Returns it unchanged if
+    there is nothing here that can be fixed safely.
+
+    Deliberately narrow. A chart the reader cannot open is worth repairing;
+    a chart quietly rewritten into something that parses but says something
+    else is not, so this only removes characters that cannot legally be
+    where they are, and never moves or invents content.
+    """
+    return _KML_EMPTY_NS.sub(r"\1", raw or "")
 
 
 def split_reply(text):
@@ -2845,7 +3520,33 @@ def split_reply(text):
         # emitted an apology inside the markers should not produce a file
         # that Google Earth then refuses to open.
         if "<kml" in raw.lower():
-            kml = raw
+            raw = xml_safe_entities(raw)
+            # Parse it here, where the journal can say what is wrong, rather
+            # than leaving it to be discovered in Google Earth days later.
+            keep_bad_kml = True
+            import xml.etree.ElementTree as _ET
+            try:
+                _ET.fromstring(raw)
+            except Exception as e:                   # noqa: BLE001
+                fixed = repair_kml(raw)
+                ok = False
+                if fixed != raw:
+                    try:
+                        _ET.fromstring(fixed)
+                        ok = True
+                    except Exception:                # noqa: BLE001
+                        ok = False
+                if ok:
+                    log.warning("the KML did not parse (%s) and was repaired; "
+                                "saving the repaired document.", e)
+                    raw = fixed
+                else:
+                    log.warning("the KML does not parse (%s) and could not be "
+                                "repaired. It is still being saved; open it "
+                                "to see what the model emitted.", e)
+                    if not keep_bad_kml:
+                        raw = ""
+            kml = raw or None
     body = _FENCE.sub("", body).strip()
     return sanitize_fragment(body), kml
 
@@ -2876,6 +3577,138 @@ def _post(url, body, headers, timeout, what):
                            % (what, e.code, e.reason, detail))
     except urllib.error.URLError as e:
         raise RuntimeError("could not reach %s: %s" % (what, e.reason))
+
+
+def brief_query_from(params):
+    """An export query string from the brief page's controls, or None.
+
+    None means "nothing was chosen", and the caller falls back to
+    export_query in the config -- so a run started without parameters behaves
+    exactly as it did before the page had controls.
+
+    The query is rebuilt from parsed values rather than passed through. The
+    export endpoint would validate it either way, but reconstructing it here
+    means the page cannot reach settings the brief does not intend to expose,
+    limit being the one that matters.
+    """
+    if not params:
+        return None
+
+    def one(name, default=""):
+        return (params.get(name) or [default])[0].strip()
+
+    parts = []
+
+    chans = [c.strip() for v in params.get("channel", [])
+             for c in v.split(",") if c.strip()]
+    if chans:
+        # Deduplicated, order preserved, so the saved query reads the way the
+        # boxes were ticked.
+        seen, keep = set(), []
+        for c in chans:
+            if c.lower() not in seen:
+                seen.add(c.lower())
+                keep.append(c)
+        parts.append("channel=" + ",".join(keep))
+
+    raw = one("hours")
+    if raw:
+        try:
+            hours = float(raw)
+        except ValueError:
+            raise ValueError("hours must be a number")
+        if not 0.1 <= hours <= 168:
+            raise ValueError("hours must be between 0.1 and 168")
+        parts.append("hours=%g" % hours)
+
+    for name, lo, hi in (("min_quality", 0, 100), ("min_duration", 0, 600)):
+        raw = one(name)
+        if raw == "":
+            continue
+        try:
+            v = float(raw)
+        except ValueError:
+            raise ValueError("%s must be a number" % name)
+        if not lo <= v <= hi:
+            raise ValueError("%s must be between %g and %g" % (name, lo, hi))
+        if v > 0:
+            parts.append("%s=%g" % (name, v))
+
+    if not parts:
+        return None
+    # A brief over messages with no transcript has nothing to read, so this
+    # is not offered as a choice.
+    parts.append("text=1")
+    return "&".join(parts)
+
+
+def group_segments(msgs, gap_s, min_dur_s):
+    """Mark runs of rows that are really one transmission cut into pieces.
+
+    The receiver stops a recording at max_message_s, so a nine-minute Coast
+    Guard bulletin arrives as six rows that look like six separate broadcasts.
+    Asking the model to spot that from timestamps means trusting it to do
+    arithmetic across a hundred rows; doing it here is exact.
+
+    Two conditions, both required. The earlier row must be long enough to have
+    plausibly been truncated -- a 12 s call followed a second later by another
+    12 s call is two vessels talking, not one transmission -- and the next must
+    begin within gap_s of where the previous one ended.
+
+    Returns the number of groups found. Mutates msgs in place.
+    """
+    if gap_s <= 0:
+        return 0
+    by_chan = {}
+    for m in msgs:
+        by_chan.setdefault(m.get("channel"), []).append(m)
+
+    gid = 0
+
+    def close(run):
+        nonlocal gid
+        if len(run) < 2:
+            return
+        gid += 1
+        for i, r in enumerate(run, 1):
+            r["group"] = gid
+            r["part"] = i
+            r["parts"] = len(run)
+
+    for rows in by_chan.values():
+        rows.sort(key=lambda r: r.get("started_epoch") or 0.0)
+        run = []
+        for m in rows:
+            if run:
+                prev = run[-1]
+                prev_end = ((prev.get("started_epoch") or 0.0)
+                            + (prev.get("duration_s") or 0.0))
+                gap = (m.get("started_epoch") or 0.0) - prev_end
+                # A small negative gap is the squelch tail overlapping, not a
+                # new transmission.
+                if ((prev.get("duration_s") or 0.0) >= min_dur_s
+                        and -1.0 <= gap <= gap_s):
+                    run.append(m)
+                    continue
+            close(run)
+            run = [m]
+        close(run)
+    return gid
+
+
+def open_in_new_tab(html_text):
+    """Every link in the brief opens in its own tab.
+
+    Done here rather than asked of the model: it is a rule that has to hold
+    for every link in every brief, and a model that forgets it once produces a
+    report that navigates away from itself.
+    """
+    def fix(m):
+        attrs = m.group(1)
+        if re.search(r"\btarget\s*=", attrs, re.I):
+            return m.group(0)
+        return '<a%s target="_blank" rel="noopener noreferrer">' % attrs
+    return re.sub(r"<a\b([^>]*)>", fix, html_text or "", flags=re.I)
 
 
 def _chat_openai(cfg, key, prompt):
@@ -2993,11 +3826,13 @@ class BriefRunner:
         with self._lock:
             self._state.update(kw)
 
-    def start(self, data, port, base_url):
+    def start(self, data, port, base_url, query=None):
         """Begin a run, or return the one already going.
 
         A second request joins the first rather than paying twice. The brief
         is a few minutes and real money; two clicks should not mean two bills.
+        Note that the joiner gets the running job's filters, not its own --
+        which is why the page disables the button while one is in flight.
         """
         with self._lock:
             if self._state["state"] == "running":
@@ -3005,12 +3840,12 @@ class BriefRunner:
             self._state = {"state": "running", "step": "starting",
                            "started": time.time(), "finished": None,
                            "id": None, "error": None, "model": None}
-        t = threading.Thread(target=self._run, args=(data, port, base_url),
-                             daemon=True)
+        t = threading.Thread(target=self._run,
+                             args=(data, port, base_url, query), daemon=True)
         t.start()
         return True
 
-    def _run(self, data, port, base_url):
+    def _run(self, data, port, base_url, query=None):
         try:
             cfg = ai_config()
             self._set(model=cfg["model"])
@@ -3020,9 +3855,15 @@ class BriefRunner:
 
             # --- the transmissions ---
             self._set(step="collecting transmissions")
-            query = cfg["export_query"]
+            # Chosen on the page for this run, else the configured default.
+            query = query or cfg["export_query"]
             if "limit=" not in query:
                 query += "&limit=%d" % int(cfg["max_messages"])
+            # The parser is three days better than it was and the brief has
+            # never seen any of it. Added here rather than in the configured
+            # export_query so an existing config does not have to be edited.
+            if "positions=" not in query:
+                query += "&positions=1"
             url = "http://127.0.0.1:%d/api/export?%s" % (port, query)
             with urllib.request.urlopen(url, timeout=120) as r:
                 export = json.loads(r.read().decode("utf-8"))
@@ -3035,8 +3876,19 @@ class BriefRunner:
 
             # --- the prompt ---
             self._set(step="building the prompt")
-            site = (cfg.get("base_url") or base_url or "").rstrip("/")
-            keep = tuple(cfg.get("fields") or BRIEF_FIELDS)
+            # Blank base_url means root-relative links, so a brief
+            # works over the funnel, the tailnet and the LAN alike.
+            # The request host is deliberately NOT used: it is the
+            # host that triggered generation, not the one viewing.
+            site = (cfg.get("base_url") or "").rstrip("/")
+            # Before the projection: grouping needs started_epoch and
+            # duration_s together, and started_epoch is not a field the model
+            # ever sees.
+            groups = group_segments(msgs, float(cfg["stitch_gap_s"]),
+                                    float(cfg["stitch_min_duration_s"]))
+            if groups:
+                log.info("brief: %d split transmission(s) re-joined", groups)
+            keep = tuple(cfg.get("fields") or BRIEF_FIELDS) + GROUP_FIELDS
             slim = []
             for m in msgs:
                 # Built here, from the id the log actually anchors on, and
@@ -3047,6 +3899,18 @@ class BriefRunner:
                 if m.get("audio_available") and m.get("msg_id") is not None:
                     m["clip_url"] = "%s/#m%d" % (site, m["msg_id"])
                 row = {k: m[k] for k in keep if m.get(k) is not None}
+                # Slimmed: the full entry carries two Google Maps URLs the
+                # model does not need and pays tokens to read. "assumed" stays
+                # -- it is the one thing a coordinate in text cannot say about
+                # itself.
+                if row.get("positions"):
+                    row["positions"] = [
+                        {"lat": p["lat"], "lon": p["lon"],
+                         "label": p.get("label"), "nm": p.get("nm"),
+                         "assumed": bool(p.get("assumed"))}
+                        for p in row["positions"]]
+                elif "positions" in row:
+                    del row["positions"]
                 # Decimals the model will never use are decimals it still has
                 # to read. One place is plenty for a duration or an SNR.
                 for k in ("duration_s", "snr_db"):
@@ -3078,6 +3942,13 @@ class BriefRunner:
             if "<<Current Position>>" not in template:
                 log.warning("%s has no <<Current Position>> placeholder",
                             prompt_path)
+            vessel = (cfg.get("vessel_name") or "").strip()
+            if not vessel:
+                # Blank must not become a rule that matches nothing in a
+                # confusing way, so say plainly that there is no name.
+                vessel = ("(no vessel name is configured, so skip this rule "
+                          "entirely)")
+            template = template.replace("<<Vessel Name>>", vessel)
             offset = time.strftime("%z")
             header = (
                 "\n\n--- RADIO TRAFFIC DATA ---\n"
@@ -3092,9 +3963,9 @@ class BriefRunner:
                    datetime.now(timezone.utc).isoformat()))
             # Compact separators, not indent=1: pretty-printing this payload
             # spends a large fraction of the prompt on whitespace.
+            traffic = json.dumps(msgs, separators=(",", ":"), default=str)
             prompt = (template.replace("<<Current Position>>", position)
-                      + header
-                      + json.dumps(msgs, separators=(",", ":"), default=str))
+                      + header + traffic)
             log.info("brief: %d messages, %.1f kB of prompt, fields %s",
                      len(msgs), len(prompt) / 1024.0, ",".join(keep))
 
@@ -3124,6 +3995,7 @@ class BriefRunner:
                 # words, drop the link: a dead download in a safety brief is
                 # worse than no download.
                 html_body = kml_ref.sub(lambda m: m.group(2), html_body)
+            html_body = open_in_new_tab(html_body)
             record = {
                 "id": bid,
                 "created": time.time(),
@@ -3131,12 +4003,28 @@ class BriefRunner:
                 "position": position,
                 "filters": export.get("filters"),
                 "query": query,
+                "query_source": "page" if query != cfg["export_query"]
+                                else "config",
                 "messages": len(msgs),
                 "total": export.get("total"),
                 "elapsed_s": round(time.time() - self.status()["started"], 1),
                 "usage": usage,
                 "base_url": site,
                 "html": html_body,
+                # Kept so a brief can be exported, argued with and compared
+                # months later. Reproducing it after the fact is not possible:
+                # the query is relative ("last 24 hours"), so re-running it
+                # returns different traffic and a different prompt.
+                #
+                # This is most of the file -- a brief goes from tens of kB to
+                # a few hundred. keep_briefs is the lever if the card starts
+                # to feel it.
+                "prompt": prompt,
+                # Where the traffic JSON begins inside prompt, so the export
+                # can cut the two apart without storing the data twice. Not a
+                # search for the first bracket: the header above it carries a
+                # JSON dump of the filters, which can contain one.
+                "traffic_offset": len(prompt) - len(traffic),
                 "kml": kml,
             }
             d = brief_dir(cfg)
@@ -3205,6 +4093,172 @@ def load_brief(bid, cfg=None):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+# Enough of the brief page's styling for the report to read correctly on its
+# own, and no more: the filters, the history dropdown and the run button have
+# no meaning in a file. Light and dark both, because a brief that leaves here
+# is as likely to be opened on someone else's machine as on this one.
+BRIEF_DOC = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%(title)s</title>
+<style>
+  :root {
+    --ground:#101A1F; --panel:#16242B; --panel-2:#1B2D35; --rule:#24373F;
+    --text:#DCE7EA; --dim:#7C949D; --accent:#7FB2C4;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#F7F8F8; --panel:#FFFFFF; --panel-2:#EEF1F2; --rule:#D8DEE0;
+      --text:#15242A; --dim:#5C7078; --accent:#1F6B86;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:15px; line-height:1.6; }
+  .wrap { max-width:860px; margin:0 auto; padding:20px 16px 56px; }
+  h1 { font-size:17px; font-weight:600; letter-spacing:.2px; margin:0 0 4px; }
+  .meta { color:var(--dim); font-size:12.5px; margin:0 0 18px;
+    border-bottom:1px solid var(--rule); padding-bottom:14px; }
+  .report { background:var(--panel); border:1px solid var(--rule);
+    border-radius:8px; padding:4px 18px 18px; }
+  .report h2 { font-size:17px; margin:22px 0 8px; color:var(--text);
+    border-bottom:1px solid var(--rule); padding-bottom:6px; }
+  .report h3 { font-size:15px; margin:18px 0 6px; color:var(--accent); }
+  .report p, .report li { font-size:14.5px; }
+  .report a { color:var(--accent); }
+  .report table { border-collapse:collapse; width:100%%; margin:10px 0;
+    font-size:13.5px; }
+  .report th, .report td { border:1px solid var(--rule); padding:6px 9px;
+    text-align:left; vertical-align:top; }
+  .report th { background:var(--panel-2); color:var(--dim); font-weight:600; }
+  .report code { background:var(--panel-2); padding:1px 5px;
+    border-radius:4px; font-size:12.5px; }
+  footer { color:var(--dim); font-size:12px; margin-top:22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>%(title)s</h1>
+<p class="meta">%(meta)s</p>
+<div class="report">
+%(body)s
+</div>
+<footer>%(foot)s</footer>
+</div>
+</body>
+</html>
+"""
+
+
+def brief_doc(rec):
+    """The stored report fragment as a document that stands on its own."""
+    when = rec.get("id") or "unknown"
+    try:
+        stamp = datetime.strptime(when, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc).astimezone().strftime("%d %B %Y, %H:%M %Z")
+    except ValueError:
+        stamp = when
+    bits = [stamp]
+    for label, key in (("model %s", "model"), ("%s messages", "messages")):
+        if rec.get(key) is not None:
+            bits.append(label % rec[key])
+    f = rec.get("filters") or {}
+    if isinstance(f, dict) and f.get("hours"):
+        bits.insert(1, "last %s h" % f["hours"])
+    usage = rec.get("usage") or {}
+    if isinstance(usage, dict) and usage.get("total_tokens"):
+        bits.append("%s tokens" % format(usage["total_tokens"], ","))
+    foot = ("Exported from %s. The report is the model's; the traffic it was "
+            "given is in traffic.json and the prompt in prompt.txt."
+            % html.escape(wk.STATION_NAME or "Radio Log"))
+    return BRIEF_DOC % {
+        "title": html.escape("%s — traffic brief %s"
+                             % (wk.STATION_NAME or "Radio Log", when)),
+        "meta": html.escape(" \u00b7 ".join(str(b) for b in bits))
+                + "<br>Position used: "
+                + html.escape(str(rec.get("position") or "unknown")),
+        "body": rec.get("html") or "<p>The model returned nothing.</p>",
+        "foot": foot,
+    }
+
+
+def brief_bundle(rec):
+    """One brief as a zip: the report, the prompt, the traffic, the metadata.
+
+    Returns (stem, bytes). Works on a brief written before the prompt was
+    being recorded; README.txt then says which files are absent.
+    """
+    bid = rec.get("id") or "brief"
+    stem = "brief-%s" % bid
+
+    prompt = rec.get("prompt")
+    traffic_raw, traffic_pretty = None, None
+    if prompt:
+        off = rec.get("traffic_offset")
+        if isinstance(off, int) and 0 <= off <= len(prompt):
+            traffic_raw = prompt[off:]
+            try:
+                traffic_pretty = json.dumps(json.loads(traffic_raw), indent=1)
+            except ValueError:
+                # Written as sent, even if it will not parse. A payload that
+                # cannot be re-read is itself worth seeing.
+                traffic_pretty = traffic_raw
+
+    summary = {k: rec.get(k) for k in
+               ("id", "created", "model", "position", "filters", "query",
+                "query_source", "messages", "total", "elapsed_s", "usage",
+                "base_url")}
+    summary["has_kml"] = bool(rec.get("kml"))
+    summary["exported_at"] = datetime.now(timezone.utc).isoformat(
+        timespec="seconds")
+
+    lines = [
+        "%s -- traffic brief %s" % (wk.STATION_NAME or "Radio Log", bid),
+        "=" * 52,
+        "",
+        "brief.html    The report, as a page that opens on its own.",
+        "summary.json  Model, filters, token usage, timings, counts.",
+    ]
+    if prompt:
+        lines += [
+            "prompt.txt    Exactly what was sent to the model, including the",
+            "              radio traffic appended to it.",
+            "traffic.json  That same traffic on its own, pretty-printed. It",
+            "              is the tail of prompt.txt, not a second copy.",
+        ]
+    else:
+        lines += [
+            "",
+            "prompt.txt and traffic.json are NOT in this zip. This brief was",
+            "generated before the prompt was being recorded, and neither can",
+            "be reconstructed now: the query is relative (\"the last 24",
+            "hours\"), so re-running it would return different traffic.",
+            "Briefs generated from now on carry both.",
+        ]
+    if rec.get("kml"):
+        lines += ["", "vhf-alert-locations.kml   Positions the report cites."]
+    lines += ["", "Exported %s." % summary["exported_at"], ""]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("README.txt", "\n".join(lines))
+        z.writestr("brief.html", brief_doc(rec))
+        if prompt:
+            z.writestr("prompt.txt", prompt)
+            if traffic_pretty is not None:
+                z.writestr("traffic.json", traffic_pretty)
+        if rec.get("kml"):
+            # Repaired on the way out, exactly as the KML endpoint does it:
+            # most stored briefs predate the entity fix.
+            z.writestr("vhf-alert-locations.kml",
+                       xml_safe_entities(rec["kml"]))
+        z.writestr("summary.json", json.dumps(summary, indent=1, default=str))
+    return stem, buf.getvalue()
 
 
 BRIEFS = BriefRunner()
@@ -3280,6 +4334,38 @@ BRIEF_PAGE = r"""<!DOCTYPE html>
     font-size:12.5px; }
   .empty { color:var(--dim); padding:36px 4px; text-align:center; }
   .kml { margin:16px 0 0; }
+
+  /* Filter panel. Collapsed by default: most runs use the same filters, and
+     a wall of controls above the report makes the report harder to find. */
+  details.filters { background:var(--panel); border:1px solid var(--rule);
+    border-radius:8px; margin:0 0 16px; }
+  details.filters > summary { cursor:pointer; padding:9px 13px;
+    font-size:13px; color:var(--dim); list-style:none; }
+  details.filters > summary::-webkit-details-marker { display:none; }
+  details.filters > summary:hover { color:var(--text); }
+  details.filters .body { padding:4px 13px 14px;
+    border-top:1px solid var(--rule); }
+  .frow { display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+    margin-top:11px; }
+  .flabel { font-size:11px; color:var(--dim); text-transform:uppercase;
+    letter-spacing:.7px; width:100%; margin-top:4px; }
+  label.chk { display:inline-flex; align-items:center; gap:6px;
+    background:var(--panel-2); border:1px solid var(--rule); border-radius:6px;
+    padding:5px 10px; font-size:13px; color:var(--dim); cursor:pointer; }
+  label.chk:hover { border-color:var(--dimmer); color:var(--text); }
+  label.chk input { accent-color:var(--accent); margin:0; }
+  label.chk.on { background:#24414D; border-color:var(--accent);
+    color:var(--text); }
+  label.chk .n { color:var(--dimmer); font-size:11px;
+    font-variant-numeric:tabular-nums; }
+  label.chk.on .n { color:var(--dim); }
+  .sl { display:flex; align-items:center; gap:9px; font-size:13px;
+    color:var(--dim); }
+  .sl input[type=range] { accent-color:var(--accent); width:150px; }
+  .sl b { color:var(--text); font-weight:600; min-width:48px;
+    font-variant-numeric:tabular-nums; }
+  .fnote { font-size:12px; color:var(--dimmer); margin:10px 0 0;
+    line-height:1.5; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -3290,17 +4376,50 @@ BRIEF_PAGE = r"""<!DOCTYPE html>
     <button type="button" class="go" id="run">Run analysis</button>
     <select id="history" title="earlier briefs"></select>
     <a class="btn" id="kml" style="display:none">Download KML</a>
+    <a class="btn" id="exportzip" style="display:none">Export brief</a>
   </div>
 </header>
 
 <main>
+  <details class="filters" id="filters">
+    <summary id="fsummary">Filters &mdash; loading&hellip;</summary>
+    <div class="body">
+      <div class="flabel">Channels heard in the last 48 hours</div>
+      <div class="frow" id="chans"><span class="fnote">loading&hellip;</span></div>
+
+      <div class="flabel">Look back</div>
+      <div class="frow">
+        <select id="hours">
+          <option value="1">1 hour</option>
+          <option value="6">6 hours</option>
+          <option value="12">12 hours</option>
+          <option value="24">24 hours</option>
+          <option value="48">48 hours</option>
+        </select>
+      </div>
+
+      <div class="flabel">Message quality</div>
+      <div class="frow">
+        <span class="sl">readability &ge;
+          <input type="range" id="minq" min="0" max="100" step="5">
+          <b id="minqv">0</b></span>
+        <span class="sl">lasting &ge;
+          <input type="range" id="mind" min="0" max="60" step="1">
+          <b id="mindv">0 s</b></span>
+        <button type="button" id="freset">Reset to config</button>
+      </div>
+
+      <p class="fnote" id="fquery">&nbsp;</p>
+    </div>
+  </details>
+
   <div class="status" id="status">
     <div class="line">
       <span class="spin" id="spin"></span>
       <span class="clock" id="clock">0:00</span>
       <span class="step" id="step">starting</span>
     </div>
-    <p class="note" id="note">The model reads the last 24 hours of traffic and
+    <p class="note" id="note">The model reads the configured window of traffic and
       writes the brief in one pass. This normally takes a few minutes. You can
       leave this page &mdash; the run continues on the receiver and the report
       will be here when you come back.</p>
@@ -3386,9 +4505,113 @@ function check() {
     });
 }
 
+// --- filters --------------------------------------------------------------
+var picked = new Set(), defaults = null, chansLoaded = [];
+
+function fmtDur(v) { return v > 0 ? v + " s" : "any"; }
+function fmtQ(v)   { return v > 0 ? v + "%"   : "any"; }
+
+function filterParams() {
+  var p = [];
+  // Every channel ticked is the same request as none ticked, so send nothing
+  // and keep the query short enough to read.
+  if (picked.size && picked.size < chansLoaded.length) {
+    p.push("channel=" + encodeURIComponent(Array.from(picked).join(",")));
+  }
+  p.push("hours=" + el("hours").value);
+  var q = +el("minq").value, d = +el("mind").value;
+  if (q > 0) { p.push("min_quality=" + q); }
+  if (d > 0) { p.push("min_duration=" + d); }
+  return p.join("&");
+}
+
+function describeFilters() {
+  var names = [];
+  chansLoaded.forEach(function (c) {
+    if (picked.has(c.key)) { names.push(c.channel.split(" ")[0]); }
+  });
+  var who = (!picked.size || picked.size === chansLoaded.length)
+            ? "all channels" : names.join(", ");
+  var h = el("hours").value;
+  el("fsummary").textContent = "Filters \u2014 " + who + ", last " +
+    h + (h === "1" ? " hour" : " hours") +
+    ", readability " + fmtQ(+el("minq").value) +
+    ", lasting " + fmtDur(+el("mind").value);
+  el("minqv").textContent = fmtQ(+el("minq").value);
+  el("mindv").textContent = fmtDur(+el("mind").value);
+  el("fquery").textContent = "/api/export?" + filterParams() + "&text=1";
+}
+
+function paintChannels() {
+  var box = el("chans");
+  box.innerHTML = "";
+  if (!chansLoaded.length) {
+    box.innerHTML = '<span class="fnote">nothing heard in the last 48 hours</span>';
+    return;
+  }
+  chansLoaded.forEach(function (c) {
+    var l = document.createElement("label");
+    l.className = "chk";
+    var i = document.createElement("input");
+    i.type = "checkbox"; i.value = c.key; i.checked = picked.has(c.key);
+    l.classList.toggle("on", i.checked);
+    i.addEventListener("change", function () {
+      if (i.checked) { picked.add(c.key); } else { picked.delete(c.key); }
+      l.classList.toggle("on", i.checked);
+      describeFilters();
+    });
+    l.appendChild(i);
+    l.appendChild(document.createTextNode(c.channel));
+    var n = document.createElement("span");
+    n.className = "n"; n.textContent = c.messages.toLocaleString();
+    l.appendChild(n);
+    box.appendChild(l);
+  });
+}
+
+function applyDefaults() {
+  if (!defaults) { return; }
+  picked = new Set();
+  // The configured channel list is written as keys (16, 22a); match it
+  // against what is actually on the air rather than assuming both agree.
+  var want = (defaults.channels || []).map(function (x) { return x.toLowerCase(); });
+  chansLoaded.forEach(function (c) {
+    if (!want.length || want.indexOf(c.key.toLowerCase()) !== -1) {
+      picked.add(c.key);
+    }
+  });
+  var h = String(defaults.hours || 24);
+  var opts = Array.prototype.map.call(el("hours").options, function (o) { return o.value; });
+  el("hours").value = opts.indexOf(h) !== -1 ? h : "24";
+  el("minq").value = defaults.min_quality || 0;
+  el("mind").value = defaults.min_duration || 0;
+  paintChannels();
+  describeFilters();
+}
+
+function loadFilters() {
+  Promise.all([
+    fetch("/api/brief/config").then(function (r) { return r.json(); }),
+    fetch("/api/export/channels?hours=48").then(function (r) { return r.json(); })
+  ]).then(function (res) {
+    defaults = res[0];
+    chansLoaded = res[1].channels || [];
+    applyDefaults();
+  }).catch(function () {
+    el("fsummary").textContent = "Filters \u2014 could not be loaded";
+    el("chans").innerHTML = '<span class="fnote">could not reach the server</span>';
+  });
+}
+
+["hours", "minq", "mind"].forEach(function (id) {
+  el(id).addEventListener("input", describeFilters);
+  el(id).addEventListener("change", describeFilters);
+});
+el("freset").addEventListener("click", applyDefaults);
+
 el("run").addEventListener("click", function () {
   el("run").disabled = true;
-  el("note").textContent = "The model reads the last 24 hours of traffic and " +
+  el("note").textContent = "The model reads the configured window of traffic and " +
     "writes the brief in one pass. This normally takes a few minutes. You can " +
     "leave this page — the run continues on the receiver and the report " +
     "will be here when you come back.";
@@ -3398,7 +4621,7 @@ el("run").addEventListener("click", function () {
   el("clock").textContent = "0:00";
   startedAt = Date.now();
   startClock();
-  fetch("/api/brief/run", { method: "POST" })
+  fetch("/api/brief/run?" + filterParams(), { method: "POST" })
     .then(function (r) { return r.json(); })
     .then(function (st) {
       if (st.error) { setError(st.error, 0); return; }
@@ -3423,6 +4646,13 @@ function load(id) {
         b.model,
         Math.round(b.elapsed_s) + " s"
       ];
+      // Taken from the brief's own saved filters rather than a number
+      // hard-coded here: the window is configurable, and an older brief in
+      // the dropdown may have run over a different one.
+      if (b.filters && b.filters.hours) {
+        bits.splice(1, 0, "last " + b.filters.hours + " h");
+      }
+      if (b.query_source === "page") { bits.push("custom filters"); }
       if (b.usage && b.usage.total_tokens) {
         bits.push(b.usage.total_tokens.toLocaleString() + " tokens");
       }
@@ -3435,6 +4665,16 @@ function load(id) {
         k.href = "/brief/" + encodeURIComponent(b.id) + "/vhf-alert-locations.kml";
         k.setAttribute("download", "vhf-alert-locations.kml");
       } else { k.style.display = "none"; }
+      // Always offered, even on a brief too old to carry its prompt: the
+      // report and the metadata are in every record, and the zip's README
+      // says what is missing rather than the button vanishing unexplained.
+      var x = el("exportzip");
+      x.style.display = "";
+      x.href = "/brief/" + encodeURIComponent(b.id) + "/export.zip";
+      x.setAttribute("download", "brief-" + b.id + ".zip");
+      x.title = b.has_prompt
+        ? "Report, prompt, traffic and metadata as one zip"
+        : "Report and metadata as one zip (this brief predates prompt recording)";
       if (el("history").value !== b.id) { el("history").value = b.id; }
     });
 }
@@ -3466,6 +4706,7 @@ function refreshHistory() {
 
 el("history").addEventListener("change", function () { load(el("history").value); });
 
+loadFilters();
 refreshHistory();
 check();
 </script>
@@ -3480,7 +4721,13 @@ def page_html():
     the config file, which is loaded after this module.
     """
     name = html.escape(wk.STATION_NAME or "Radio Log")
-    return PAGE.replace("{{STATION}}", name)
+    # Removed rather than hidden: a link to a page that answers 404 is worse
+    # than no link, and the setting is read here so a toml edit shows up on
+    # the next page load.
+    link = ('<a href="/report">Thermal report</a>'
+            if thermal_report_on() else "")
+    return (PAGE.replace("{{STATION}}", name)
+                .replace("{{THERMAL_LINK}}", link))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3497,12 +4744,50 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log.debug("%s - %s", self.address_string(), fmt % args)
 
+    # Compressible content types. WAV and the zip export are left out: they
+    # are already compressed and gzip would make them slightly larger while
+    # costing a pass over the bytes.
+    _GZIP_TYPES = ("application/json", "text/", "image/svg+xml",
+                   "application/xml")
+    # One MTU. Below this there is nothing to win and the gzip header is pure
+    # overhead.
+    _GZIP_MIN = 1400
+    # 6 is the knee: 6.1x on a real 909 KB /api/messages payload against 6.3x
+    # at level 9 for 65% more CPU.
+    _GZIP_LEVEL = 6
+
+    def _gzip_ok(self, code, body, ctype, extra):
+        """Whether this particular response may be compressed.
+
+        Audio is served through this same method with 206 and a Content-Range
+        header, because Safari on iOS will not play a clip otherwise.
+        Compressing a partial response makes the byte range meaningless and
+        breaks playback in a way that reads as a codec problem, so both the
+        status code and the header are checked -- either one alone would be
+        enough, and that is the point.
+        """
+        if code != 200 or "Content-Range" in extra:
+            return False
+        if len(body) < self._GZIP_MIN:
+            return False
+        if not ctype.startswith(self._GZIP_TYPES):
+            return False
+        return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+
     def _send(self, code, body, ctype, extra=None):
+        extra = dict(extra or {})
+        if self._gzip_ok(code, body, ctype, extra):
+            body = gzip.compress(body, self._GZIP_LEVEL)
+            extra["Content-Encoding"] = "gzip"
+            # Without this a proxy may serve a gzipped body to a client that
+            # never asked for one.
+            extra["Vary"] = "Accept-Encoding"
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        # After compression, so HEAD still describes what a GET would return.
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        for k, v in (extra or {}).items():
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -3523,7 +4808,17 @@ class Handler(BaseHTTPRequestHandler):
             host = self.headers.get("Host") or ""
             base = ("http://" + host) if host else ""
             port = self.server.server_address[1]
-            started = BRIEFS.start(self.data, port, base)
+            # Filters chosen on the page apply to this run only; with none,
+            # brief_query_from returns None and the configured export_query
+            # is used, which is what a scheduled or scripted run gets.
+            try:
+                query = brief_query_from(
+                    urllib.parse.parse_qs(self.path.partition("?")[2]))
+            except ValueError as e:
+                self._send(400, json.dumps({"error": str(e)}).encode(),
+                           "application/json")
+                return
+            started = BRIEFS.start(self.data, port, base, query)
             payload = BRIEFS.status()
             # Not "started": the status dict already uses that key for the
             # epoch the run began at, and overwriting it with a boolean threw
@@ -3532,7 +4827,58 @@ class Handler(BaseHTTPRequestHandler):
             payload["joined"] = not started
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
+        if path == "/api/correct":
+            self._correct()
+            return
         self._send(405, b"method not allowed", "text/plain; charset=utf-8")
+
+    def _correct(self):
+        """Record a corrected transcript.
+
+        POST, for the same reason /api/brief/run is: nothing that follows
+        links speculatively should be able to reach something that writes.
+        There is no authentication here, exactly as there is none on the brief
+        -- the interface is reached over the tailnet -- so every correction is
+        logged with the client address and the text it replaced. That log is
+        the only record of who changed what.
+        """
+        def fail(code, msg):
+            self._send(code, json.dumps({"error": msg}).encode(),
+                       "application/json")
+
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 256 * 1024:
+            fail(400, "expected a JSON body of {id, text}")
+            return
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8"))
+            msg_id = int(body["id"])
+            text = body["text"]
+        except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+            fail(400, "expected a JSON body of {id, text}")
+            return
+        if not isinstance(text, str):
+            fail(400, "text must be a string")
+            return
+
+        try:
+            res = self.data.correct(msg_id, text)
+        except LookupError as e:
+            fail(404, str(e))
+            return
+        except ValueError as e:
+            fail(400, str(e))
+            return
+        except sqlite3.Error as e:
+            fail(503, str(e))
+            return
+
+        log.info("message %s corrected from %s: %r -> %r",
+                 msg_id, self.client_address[0], res["original"], res["text"])
+        self._send(200, json.dumps(res).encode(), "application/json")
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -3608,6 +4954,31 @@ class Handler(BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
             return
 
+        if path == "/api/brief/config":
+            # What the page should open showing. Parsed from the configured
+            # export_query rather than repeated in the HTML, so the two
+            # cannot drift apart.
+            cfg = ai_config()
+            q = urllib.parse.parse_qs(cfg.get("export_query") or "")
+            def _one(name, cast, default=None):
+                raw = (q.get(name) or [""])[0]
+                try:
+                    return cast(raw) if raw != "" else default
+                except ValueError:
+                    return default
+            payload = {
+                "channels": [c for v in q.get("channel", [])
+                             for c in v.split(",") if c.strip()],
+                "hours": _one("hours", float, 24.0),
+                "min_quality": _one("min_quality", float, 0.0),
+                "min_duration": _one("min_duration", float, 0.0),
+                "vessel_name": (cfg.get("vessel_name") or "").strip(),
+                "model": cfg.get("model"),
+                "export_query": cfg.get("export_query"),
+            }
+            self._send(200, json.dumps(payload).encode(), "application/json")
+            return
+
         if path == "/api/brief/status":
             self._send(200, json.dumps(BRIEFS.status()).encode(),
                        "application/json")
@@ -3623,6 +4994,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(payload).encode(), "application/json")
             return
 
+        m = re.fullmatch(r"/brief/([0-9TZ]{1,24})/export\.zip", path)
+        if m:
+            rec = load_brief(m.group(1))
+            if not rec:
+                self._send(404, b"no such brief", "text/plain; charset=utf-8")
+                return
+            stem, blob = brief_bundle(rec)
+            self._send(200, blob, "application/zip",
+                       {"Content-Disposition":
+                        'attachment; filename="%s.zip"' % stem})
+            return
+
         m = re.fullmatch(r"/brief/([0-9TZ]{1,24})/vhf-alert-locations\.kml",
                          path)
         if m:
@@ -3631,7 +5014,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, b"no KML for that brief",
                            "text/plain; charset=utf-8")
                 return
-            self._send(200, rec["kml"].encode("utf-8"),
+            # Repaired on the way out, not only on the way in. The brief
+            # was stored when it was generated, so a KML written before the
+            # entity fix existed is still broken in the file -- and that is
+            # most of them. Doing it here means every brief ever written
+            # downloads as something Google Earth will open, the same way a
+            # position is re-parsed from the transcript on every view rather
+            # than frozen at decode time.
+            self._send(200, xml_safe_entities(rec["kml"]).encode("utf-8"),
                        "application/vnd.google-earth.kml+xml",
                        {"Content-Disposition":
                         'attachment; filename="vhf-alert-locations.kml"'})
@@ -3646,17 +5036,31 @@ class Handler(BaseHTTPRequestHandler):
                 return
             rec = dict(rec)
             # The KML can be large and the page only needs to know it exists;
-            # it is fetched by its own URL when the button is used.
+            # it is fetched by its own URL when the button is used. The prompt
+            # is larger still and would otherwise be re-downloaded every time
+            # a brief is opened or picked from the history dropdown.
             rec["has_kml"] = bool(rec.pop("kml", None))
+            rec["has_prompt"] = bool(rec.pop("prompt", None))
+            rec.pop("traffic_offset", None)
             self._send(200, json.dumps(rec).encode(), "application/json")
             return
 
         if path == "/report":
+            if not thermal_report_on():
+                self._send(404, b"the thermal report is switched off "
+                                b"(set thermal_report = true under [web] "
+                                b"in watchkeeper.toml)",
+                           "text/plain; charset=utf-8")
+                return
             self._send(200, report_html().encode("utf-8"),
                        "text/html; charset=utf-8")
             return
 
         if path == "/api/thermal":
+            if not thermal_report_on():
+                self._send(404, b'{"error":"the thermal report is '
+                                b'switched off"}', "application/json")
+                return
             q = urllib.parse.parse_qs(self.path.partition("?")[2])
             now = time.time()
             try:
@@ -3699,8 +5103,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/export/channels":
+            q = urllib.parse.parse_qs(self.path.partition("?")[2])
             try:
-                payload = {"channels": self.data.export_channels()}
+                hours = float((q.get("hours") or [0])[0] or 0)
+            except ValueError:
+                self._send(400, b'{"error":"hours must be a number"}',
+                           "application/json")
+                return
+            try:
+                payload = {"channels":
+                           self.data.export_channels(hours or None)}
             except sqlite3.Error as e:
                 self._send(503, json.dumps({"error": str(e)}).encode(),
                            "application/json")
@@ -3716,6 +5128,10 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/audio/(\d+)", path)
         if m:
             self._serve_audio(int(m.group(1)))
+            return
+
+        if path == "/download/multi":
+            self._serve_multi()
             return
 
         m = re.fullmatch(r"/download/(\d+)", path)
@@ -3918,6 +5334,108 @@ class Handler(BaseHTTPRequestHandler):
         stem, blob = build_bundle(row, audio)
         self._send(200, blob, "application/zip",
                    {"Content-Disposition": f'attachment; filename="{stem}.zip"'})
+
+    # Taking a whole exchange away rather than a message at a time. A
+    # conversation on Ch16 is six or eight transmissions and means nothing
+    # read one at a time, so the unit of archiving is the selection.
+    #
+    # Two limits, both deliberate. The count keeps one careless select-all
+    # from asking for the whole ring; the byte budget keeps the zip from
+    # being built in memory on a box whose memory is the thing most worth
+    # protecting. Both refuse with a message naming the number, because a
+    # download that quietly came back short is worse than one that did not
+    # come at all.
+    MULTI_MAX = 100
+    MULTI_MAX_BYTES = 150 * 1024 * 1024
+
+    def _serve_multi(self):
+        q = urllib.parse.parse_qs(self.path.partition("?")[2])
+        raw = []
+        for v in (q.get("ids") or []):
+            raw.extend(p for p in re.split(r"[,\s]+", v) if p)
+        ids, seen = [], set()
+        for p in raw:
+            if p.isdigit() and int(p) not in seen:
+                seen.add(int(p))
+                ids.append(int(p))
+        if not ids:
+            self._send(400, b"no message ids given", "text/plain")
+            return
+        if len(ids) > self.MULTI_MAX:
+            self._send(400, ("select at most %d messages at once; "
+                             "%d were asked for"
+                             % (self.MULTI_MAX, len(ids))).encode(),
+                       "text/plain")
+            return
+
+        picked, missing, budget = [], [], 0
+        for n in ids:
+            try:
+                row = self.data.message(n)
+                audio = self.data.audio_path(n)
+            except sqlite3.Error as e:
+                self._send(503, str(e).encode(), "text/plain")
+                return
+            if row is None:
+                # A message can age out of the ring between being selected and
+                # being asked for. Named in the manifest, not dropped.
+                missing.append(n)
+                continue
+            if audio:
+                budget += os.path.getsize(audio)
+            picked.append((row, audio))
+
+        if not picked:
+            self._send(404, b"none of those messages are still in the log",
+                       "text/plain")
+            return
+        if budget > self.MULTI_MAX_BYTES:
+            self._send(400, ("those %d recordings come to %.0f MB, past the "
+                             "%.0f MB limit -- select fewer"
+                             % (len(picked), budget / 1e6,
+                                self.MULTI_MAX_BYTES / 1e6)).encode(),
+                       "text/plain")
+            return
+
+        # Oldest first: an archived exchange should read in the order it was
+        # heard, not in the newest-first order the log displays it in.
+        picked.sort(key=lambda p: (p[0]["started_at"] or "", p[0]["id"]))
+
+        now = datetime.now(timezone.utc)
+        manifest = {
+            "station": wk.STATION_NAME,
+            "generated_at": now.isoformat(timespec="seconds"),
+            "requested": len(ids),
+            "included": len(picked),
+            "messages": [],
+        }
+        if missing:
+            manifest["not_found"] = missing
+
+        buf = io.BytesIO()
+        used = set()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for row, audio in picked:
+                stem, note = bundle_note(row, audio)
+                # Two transmissions can start in the same second on the same
+                # channel, and the stem is built from exactly those two things.
+                if stem in used:
+                    stem = "%s_%d" % (stem, row["id"])
+                used.add(stem)
+                if audio:
+                    z.write(audio, "%s.wav" % stem)
+                z.writestr("%s.txt" % stem, note)
+                manifest["messages"].append(_multi_entry(row, audio, stem))
+            # Written last, when it is complete. This is what makes the zip an
+            # archive rather than a folder of wavs: the transcripts, the
+            # telemetry and the adjudicated positions in one parseable file.
+            z.writestr("summary.json",
+                       json.dumps(manifest, indent=1, default=str))
+
+        stamp = now.strftime("%Y%m%dT%H%M%SZ")
+        self._send(200, buf.getvalue(), "application/zip",
+                   {"Content-Disposition":
+                    'attachment; filename="radio-log-%s.zip"' % stamp})
 
     def _serve_audio(self, msg_id):
         path = self.data.audio_path(msg_id)

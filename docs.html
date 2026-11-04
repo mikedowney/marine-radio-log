@@ -108,13 +108,14 @@
 <header>
   <h1>Radio Log</h1>
   <p class="sub">A multi-channel VHF receiver, recorder and transcriber running on a Raspberry&nbsp;Pi&nbsp;5.</p>
-  <p class="meta">Operator and maintenance guide &middot; last revised 20 September 2026</p>
+  <p class="meta">Operator and maintenance guide &middot; last revised 4 November 2026</p>
 </header>
 
 <nav>
   <h2>Contents</h2>
   <ol>
     <li><a href="#what">What it does</a></li>
+    <li><a href="#using">Using the log</a></li>
     <li><a href="#quickstart">Getting it running</a></li>
     <li><a href="#hardware">Hardware</a></li>
     <li><a href="#theory">Theory of operation</a></li>
@@ -141,24 +142,189 @@ at a time and you miss whatever happens on the others. This receives the whole
 band continuously and splits it into channels in software, so nothing is missed
 while something else is talking.</p>
 
-<p>Two bands are supported and behave quite differently:</p>
+<p>The band is marine VHF, 156&ndash;158&nbsp;MHz, narrowband FM: boats,
+harbour control, vessel traffic services and the Coast Guard.</p>
+
+<!-- ========================================================= -->
+<!-- ========================================================= -->
+<h2 id="using">2. Using the log</h2>
+
+<p>The log is a web page. Open it on a phone, a tablet or a laptop &mdash;
+there is nothing to install and no password. Every transmission the receiver
+hears appears at the top of the list within a few seconds of the speaker
+letting go of the button.</p>
+
+<p>Newest is first. The page refreshes itself, so leave it open and it stays
+current.</p>
+
+<h3 id="row">Reading a message</h3>
+
+<p>Each row is one transmission. Reading left to right:</p>
+
+<table>
+  <tr><th>What you see</th><th>What it means</th></tr>
+  <tr><td>Coloured bar</td>
+      <td>Which channel. The colours match the legend in the settings
+          panel.</td></tr>
+  <tr><td><code>8:06</code></td>
+      <td>How long ago it was heard, counting up live. After fifteen minutes
+          the row dims slightly, so a glance tells you what is current.</td></tr>
+  <tr><td><code>6.0s</code></td>
+      <td>How long the transmission lasted.</td></tr>
+  <tr><td><code>Ch16 Distress</code></td>
+      <td>The channel name.</td></tr>
+  <tr><td><code>93%</code></td>
+      <td>How clearly it came through. Not volume &mdash; see
+          <a href="#readability">below</a>.</td></tr>
+  <tr><td>The text</td>
+      <td>What the computer thinks was said.</td></tr>
+</table>
+
+<p><strong>Tap anywhere on a row to play the recording.</strong> Tap it again
+to stop. The row you are listening to is highlighted.</p>
+
+<p>The <strong>download arrow</strong> on the right saves that recording and
+its transcript together, which is what you want if you need to send a clip to
+someone or keep it before it expires.</p>
+
+<h3 id="badges">Badges and what they are telling you</h3>
+
+<table>
+  <tr><th>Badge</th><th>Meaning</th></tr>
+  <tr><td><span style="color:#C62828"><b>DISTRESS</b></span> in the header</td>
+      <td>Urgent traffic in the last thirty minutes. <strong>Tap it</strong>
+          and the page jumps straight to the message, even if your filters
+          would normally hide it.</td></tr>
+  <tr><td><b>LISTEN</b> on a row</td>
+      <td>This message used distress or urgency wording. It does
+          <em>not</em> mean the text is wrong and it does not mean there is an
+          emergency &mdash; it means play the audio rather than trusting what
+          is written.</td></tr>
+  <tr><td>A map pin</td>
+      <td>A position was read out. Tap it to open the location in a map. The
+          number beside it is how far away that is from the boat.</td></tr>
+  <tr><td><b>THROTTLED</b></td>
+      <td>The Raspberry Pi is hot and has slowed itself down. Transcripts will
+          lag behind the audio until it cools.</td></tr>
+  <tr><td><b>AUTO</b></td>
+      <td>Autoplay is on &mdash; new messages will play themselves as they
+          arrive.</td></tr>
+  <tr><td>The dot by the title</td>
+      <td>Green means the page is talking to the receiver. If it fades, the
+          connection has dropped and what you are reading may be stale.</td></tr>
+</table>
+
+<div class="note">
+  <b>A map pin with "hemisphere assumed"</b>
+  <p>Radio operators often read out a position without saying north or west.
+  When that happens the receiver assumes you are in the hemisphere the boat is
+  in. It is almost always right and it is labelled so you can tell.</p>
+</div>
+
+<h3 id="panel">The settings panel</h3>
+
+<p>Tap the header &mdash; anywhere along the title bar &mdash; to open it.
+Tap again to close. Everything in here affects only your own screen; it
+changes nothing on the receiver and nothing for anyone else looking at the
+same log.</p>
+
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td><b>Quality</b> slider</td>
+      <td>Hides messages below a clarity threshold. Dragging it to about 60%
+          removes most of the noise and keeps most of the speech. At 0 you see
+          everything.</td></tr>
+  <tr><td><b>Length</b> slider</td>
+      <td>Hides transmissions shorter than the chosen number of seconds. Good
+          for clearing out squelch clicks and keyed microphones.</td></tr>
+  <tr><td><b>Hide No Speech</b></td>
+      <td>Hides rows where nothing intelligible was found. The recording is
+          still there; it is only hidden from the list.</td></tr>
+  <tr><td><b>AutoPlay</b></td>
+      <td>Plays each new message as it arrives. It respects your filters, so
+          a muted channel stays silent.</td></tr>
+  <tr><td><b>Channel legend</b></td>
+      <td>Tap a channel to mute it &mdash; useful when one channel is busy and
+          you only care about another. The count beside a muted channel keeps
+          running, so you can see what you are missing.</td></tr>
+  <tr><td><b>Coordinate converter</b></td>
+      <td>Paste a position in any format and get it back in the others, plus a
+          map link.</td></tr>
+</table>
+
+<p>The panel also holds the links to the other pages: <b>Search</b>,
+<b>Export</b>, <b>AI brief</b>, <b>Thermal report</b>, this guide, and
+<b>Top of log</b>.</p>
+
+<div class="warn-box">
+  <b>Filters hide, they never delete</b>
+  <p>Nothing you do with the sliders or the channel legend removes anything.
+  The counts at the top of the page always show the true total alongside how
+  many are currently hidden, so you can tell at a glance that the quiet log
+  in front of you is a filter rather than a quiet afternoon.</p>
+</div>
+
+<h3 id="finding">Finding something you heard earlier</h3>
+
+<p>The main log holds roughly the last three days. <b>Search</b> goes back
+through everything the receiver has ever heard.</p>
+
+<p>Search matches the words in transcripts, so searching for a vessel name, a
+place, or a phrase like <em>taking on water</em> will find it. Each result
+offers:</p>
+
 <ul>
-  <li><strong>Marine VHF</strong> (156&ndash;158&nbsp;MHz), narrowband FM. Boats,
-      harbour control, Coast Guard.</li>
-  <li><strong>Aviation</strong> (118&ndash;137&nbsp;MHz), AM. Air traffic control.</li>
+  <li><b>play</b> &mdash; listen to it there and then;</li>
+  <li><b>in log</b> &mdash; jump to that message in the main log, with the
+      traffic either side of it, which is usually what you want when something
+      was part of a conversation;</li>
+  <li><b>zip</b> &mdash; download the recording with its transcript.</li>
 </ul>
+
+<p><b>Export</b> produces a file of many messages at once &mdash; a day of
+Channel 16, say &mdash; for mailing to someone or keeping a record.</p>
+
+<div class="warn-box">
+  <b>Recordings do not last forever</b>
+  <p>Audio is kept in memory to spare the memory card, which means
+  <strong>every recording is lost when the Pi reboots or loses power</strong>,
+  and older ones are discarded as new traffic arrives. The written log
+  survives; the sound does not.</p>
+  <p>If a clip matters, download it the day you hear it.</p>
+</div>
+
+<h3 id="brief-intro">The AI brief</h3>
+
+<p><b>AI brief</b> asks a language model to read the last day of traffic and
+write a short summary &mdash; what the Coast Guard has been broadcasting,
+anything that happened near the boat, and what the weather is doing. It takes
+a minute or so and costs a small amount against the account key.</p>
+
+<p>It is a convenience, not a source. It is summarising transcripts that are
+themselves approximate, so treat anything surprising in it as a prompt to go
+and read the underlying messages.</p>
+
+<h3 id="readability">What the percentage actually measures</h3>
+
+<p>The figure beside each channel name is <em>readability</em> &mdash; how
+speech-like the recording is &mdash; not how strong the signal was.</p>
+
+<p>A distant, hissy transmission that is nevertheless clear speech can score
+high. A powerful burst of interference scores low. This is deliberate: what
+matters when you are skimming a log is whether there are words in there, not
+whether the transmitter was close.</p>
 
 <div class="note">
   <b>The recording is the record</b>
-  <p>Transcripts are a convenience for skimming. They are produced by a speech
-  model working on noisy radio audio and they are sometimes wrong in ways that
-  read perfectly well. Every transcript can be played back as audio, and on
-  anything that matters you should listen rather than trust the text. This
-  principle shapes a lot of the design below.</p>
+  <p>Transcripts are produced by a speech model working on noisy radio audio.
+  They are sometimes wrong in ways that read perfectly well &mdash; a vessel
+  name, a channel number or a position can come out plausible and incorrect.
+  <strong>On anything that matters, play the audio.</strong> This principle
+  shapes much of the design described later in this document.</p>
 </div>
 
 <!-- ========================================================= -->
-<h2 id="quickstart">2. Getting it running</h2>
+<h2 id="quickstart">3. Getting it running</h2>
 
 <p>Two programs, run independently. Neither needs the other, though the web
 interface has nothing to show until the watchkeeper has recorded something.</p>
@@ -197,7 +363,7 @@ service.</p>
 </div>
 
 <!-- ========================================================= -->
-<h2 id="hardware">3. Hardware</h2>
+<h2 id="hardware">4. Hardware</h2>
 
 <table>
   <tr><th>Part</th><th>Detail</th><th>Notes</th></tr>
@@ -213,8 +379,13 @@ service.</p>
           <a href="#trouble">troubleshooting</a>.</td></tr>
   <tr><td>Storage</td><td>microSD</td>
       <td>Recordings live in RAM to spare it — see <a href="#files">files</a>.</td></tr>
-  <tr><td>Antenna</td><td>Marine VHF</td>
+  <tr><td>Antenna</td><td>Marine VHF, masthead</td>
       <td>The single biggest influence on transcription quality.</td></tr>
+  <tr><td>T/R switch</td><td>MFJ-1708B-SDR</td>
+      <td>RF-sensing transmit/receive switch. Shares the masthead antenna
+          between the vessel's VHF transceiver and the SDR, and protects the
+          dongle when the transceiver keys up. <b>Not optional on a shared
+          antenna</b> &mdash; see <a href="#trswitch">below</a>.</td></tr>
   <tr><td>AI HAT+ 2</td><td>Hailo-10H NPU &mdash; evaluated, then removed</td>
       <td>Benchmarked and rejected for speech, then taken out: it blocks the
           cooler's airflow. See <a href="#limits">known limits</a>.</td></tr>
@@ -262,10 +433,65 @@ few percent; location moved it from unusable to good.</p>
 <p>If transcripts are poor, look at the antenna and its position before
 changing any setting described in this document.</p>
 
-<!-- ========================================================= -->
-<h2 id="theory">4. Theory of operation</h2>
+<h3 id="trswitch">Sharing the antenna with the vessel&rsquo;s VHF</h3>
 
-<h3>4.1 The signal path</h3>
+<p>The receiver here is not on an antenna of its own. It shares the masthead
+antenna with the boat's VHF transceiver through an
+<b>MFJ-1708B-SDR</b> RF-sensing T/R switch, wired antenna &rarr; switch, with
+the transceiver on the XCVR port and the dongle on the SDR REC port.</p>
+
+<div class="warn-box">
+  <b>Without this, the first transmission ends the dongle</b>
+  <p>An RTL-SDR front end is built for microvolts and tolerates a few
+  milliwatts. A fixed-mount marine VHF puts out up to 25&nbsp;W, which is
+  roughly seven orders of magnitude more, arriving down a few metres of coax
+  that attenuate almost none of it. There is no setting in this software that
+  protects against that, and no amount of care about <em>not</em> transmitting
+  while the receiver runs, because anyone aboard can pick up the handset.</p>
+</div>
+
+<p>The switch idles with the antenna connected to the SDR. When it senses RF
+from the transceiver it transfers the antenna to the XCVR port and isolates
+the SDR input for the duration of the transmission, then returns. Relevant
+figures from the manufacturer:</p>
+
+<table>
+  <tr><th>Specification</th><th>Value</th><th>What it means here</th></tr>
+  <tr><td>Maximum transmit power</td><td>200&nbsp;W</td>
+      <td>A 25&nbsp;W marine set is well inside it. The manual is explicit
+          that the unit must not be used above 200&nbsp;W.</td></tr>
+  <tr><td>SWR</td><td>Good through 450&nbsp;MHz</td>
+      <td>Marine VHF at 156&ndash;158&nbsp;MHz sits comfortably in range.</td></tr>
+  <tr><td>Receive delay</td><td>~40&ndash;50&nbsp;ms to 2&ndash;4&nbsp;s,
+          adjustable</td>
+      <td>How long the SDR stays disconnected after the carrier drops. Keep it
+          near the short end: every millisecond of it is time this receiver is
+          deaf on <em>all</em> channels, not just the one being used.</td></tr>
+  <tr><td>Keying</td><td>RF sensing, or the CTRL input</td>
+      <td>CTRL lets the transceiver's PTT line drive the switch directly,
+          which removes the dependence on sensing the RF at all.</td></tr>
+</table>
+
+<p>Two installation notes from the manual are worth acting on. Removing
+<b>JP2</b> improves receive-path loss at VHF and UHF, which is the only band
+this system uses, so there is no reason to leave it in. And nothing may ever
+be transmitted into the SDR REC port &mdash; that port is an input only.</p>
+
+<div class="note">
+  <b>The coverage gap this creates</b>
+  <p>While the vessel's own VHF is transmitting, this receiver hears nothing
+  on any channel, because the antenna is physically elsewhere. Your own
+  transmissions never appear in the log, and neither does anything else that
+  happened to be on the air at that moment. A long call on 16 is a hole in the
+  record across all six channels, not a gap on one. Nothing in the log marks
+  it, so a quiet stretch that lines up with your own radio traffic is a
+  hardware artefact and not a quiet VHF band.</p>
+</div>
+
+<!-- ========================================================= -->
+<h2 id="theory">5. Theory of operation</h2>
+
+<h3>5.1 The signal path</h3>
 
 <p class="chain">
   <span>antenna</span><i>&rarr;</i><span>RTL-SDR</span><i>&rarr;</i><span><code>rtl_sdr</code></span><i>&rarr;</i><span>raw I/Q, 2.048&nbsp;MSPS</span><i>&rarr;</i><span>channelizer</span><i>&rarr;</i><span>one receiver per channel</span><i>&rarr;</i><span>squelch gate</span><i>&rarr;</i><span>message</span><i>&rarr;</i><span>WAV + database row</span><i>&rarr;</i><span>transcriber</span><i>&rarr;</i><span>web interface</span>
@@ -276,7 +502,7 @@ interest falls inside the 2.048&nbsp;MHz it can capture at once. That capture
 is read in quarter-second chunks by a dedicated thread, so the USB stream never
 stalls waiting for processing.</p>
 
-<h3>4.2 The channelizer</h3>
+<h3>5.2 The channelizer</h3>
 
 <p>Each channel is extracted from the wideband capture by mixing it down to
 baseband and then decimating in two stages:</p>
@@ -293,7 +519,7 @@ not bleed into its neighbours.</p>
 on how many channels a preset can watch: eight voice channels plus two
 references is about as far as a Pi&nbsp;5 goes while also transcribing.</p>
 
-<h3>4.3 Reference channels and calibration</h3>
+<h3>5.3 Reference channels and calibration</h3>
 
 <p>Every preset includes two channels marked <code>role = "reference"</code>,
 placed on frequencies that carry no traffic — usually 12.5&nbsp;kHz off the
@@ -311,17 +537,9 @@ usually means something is transmitting on a reference frequency. And if their
 absolute power drops sharply, the log raises an antenna alarm, because a 25&nbsp;dB
 drop in received noise almost always means a connector has come loose.</p>
 
-<h3>4.4 Squelch: two completely different problems</h3>
+<h3>5.4 Squelch</h3>
 
-<h4>AM (aviation)</h4>
-<p>An AM transmitter only radiates while someone is talking, so carrier power
-is a direct measure of whether anyone is on the channel. The gate opens a set
-margin above the measured noise floor (default 8&nbsp;dB) and closes a smaller
-margin below it (5&nbsp;dB), the difference being hysteresis so it does not
-chatter.</p>
-
-<h4>FM (marine)</h4>
-<p>This one is less obvious. An FM receiver's output is the same loudness
+<p>Detecting a transmission on FM is less obvious than it looks. An FM receiver's output is the same loudness
 whether it is receiving speech or pure noise — that is what the modulation
 does, and it is why an unsquelched FM radio hisses at full volume. Measured on
 this receiver, carrier present and carrier absent both produce about
@@ -339,7 +557,7 @@ continuous carrier for minutes at a time, so carrier detection alone would
 produce one enormous recording. Within an open carrier a speech gate segments
 the audio into individual transmissions on pauses.</p>
 
-<h3>4.5 Squelch tail and dropouts</h3>
+<h3>5.5 Squelch tail and dropouts</h3>
 
 <p>When a carrier drops, the FM discriminator has nothing to demodulate and
 outputs full-scale noise. That is the burst of static at the end of every
@@ -362,7 +580,7 @@ absent — ramped over each frame so the transition does not click. On a
 fluttering signal this removes bursts of static from the middle of a recording,
 not merely the end.</p>
 
-<h3>4.6 Audio conditioning</h3>
+<h3>5.6 Audio conditioning</h3>
 
 <p>Once a message is complete it is processed in a fixed order, and the order
 matters:</p>
@@ -397,7 +615,7 @@ is not: the gain applied afterwards puts the peaks straight back. The key-up
 transient measured +12.9&nbsp;dB and clipped. With the limiter in the right
 place it is +5.3&nbsp;dB with no full-scale samples, and inaudible.</p>
 
-<h3 id="intermod">4.6.1 Why the tuner gain is so low</h3>
+<h3 id="intermod">5.6.1 Why the tuner gain is so low</h3>
 
 <p>The gain has come down in stages &mdash; 36.4 for the original cabin dipole,
 then 25, then 19.7, then 16. Each drop costs sensitivity, so it is worth
@@ -450,7 +668,7 @@ set applies its selectivity at a fixed 455&nbsp;kHz IF, where 70&nbsp;dB of
 adjacent-channel rejection is a cheap ceramic filter rather than an
 impossibility.</p>
 
-<h3 id="gate">4.6.2 The pre-transcription gate</h3>
+<h3 id="gate">5.6.2 The pre-transcription gate</h3>
 
 <p>The encoder always processes one padded 30-second window, so a one-second
 clip costs nearly as much to decode as a twenty-five-second one. On a Pi 5
@@ -537,33 +755,125 @@ receiver logs a warning at startup for any name it does not recognise.</p>
       against measured noise-only clips would spread the scale usefully.</li>
 </ul>
 
-<h3>4.7 Transcription</h3>
+<h3 id="transcribe">5.7 Transcription</h3>
 
 <p>Recording and transcription are deliberately decoupled. The WAV and the
 database row exist before the transcriber ever sees them, so a slow or failed
 transcription degrades to "tap to listen" rather than a lost message.</p>
 
+<p>Two engines run, and they are chosen for opposite strengths.</p>
+
+<table>
+  <tr><th>Role</th><th>Model</th><th>Runs on</th></tr>
+  <tr><td>Primary</td>
+      <td><code>nemo-parakeet-tdt-0.6b-v2</code>, fp32, via
+          <code>onnx-asr</code>. int8 drops the opening of a transmission
+          more often; fp32 costs about 0.2 of real time more. The weights
+          load from a plain directory of hard links, because ONNX Runtime
+          will not follow a model's external <code>.data</code> file out of
+          the Hugging Face cache's symlinked layout.</td>
+      <td>Every transmission.</td></tr>
+  <tr><td>Second pass</td>
+      <td><code>medium.en</code>, int8, via faster-whisper</td>
+      <td>Only transmissions that look like they contain a position. Loaded on
+          demand and released after 900&nbsp;s idle.</td></tr>
+</table>
+
+<h4>Why a transducer is the primary</h4>
+
+<p>Parakeet is a <strong>transducer</strong> (RNN-T/TDT). It consumes encoder
+frames in order and stops when the frames run out. There is no mechanism by
+which it can emit text after the audio has ended &mdash; not a tendency, an
+architectural fact.</p>
+
+<p>Whisper is an autoregressive encoder&ndash;decoder working on a window
+padded to a fixed thirty seconds. When the audio is silence or noise, the
+decoder is still asked what comes next, and it answers from its training
+distribution: <em>Thanks for watching!</em>, <em>The End</em>, subtitle credits,
+invented narration. Every phrase filter this program used to carry existed to
+clean up after that one behaviour.</p>
+
+<p>Measured head-to-head over 80 logged clips, the same audio for both:</p>
+
+<table>
+  <tr><th></th><th>Parakeet</th><th><code>medium.en</code></th></tr>
+  <tr><td>Invented passages</td><td>0</td><td>12 of 80</td></tr>
+  <tr><td>Decode time</td>
+      <td>&asymp; 0.13 &times; duration</td>
+      <td>&asymp; 11.9&nbsp;s + 1.17 &times; duration</td></tr>
+  <tr><td>Short clips</td><td colspan="2">about 30&times; faster</td></tr>
+  <tr><td>Overall</td><td colspan="2">about 11&times; faster</td></tr>
+</table>
+
+<p>The fixed 11.9&nbsp;seconds in the Whisper fit is the padded encoder window:
+a one-second clip costs nearly as much as a twenty-five-second one. The
+transducer has no such floor, which is most of where the speed comes from.</p>
+
+<p>In service over 551 messages and 155 minutes of audio in 24&nbsp;hours, the
+real-time factor is 0.28 median and 0.38 at the 90th percentile, for about 82
+minutes of decoding &mdash; roughly half of one core.</p>
+
 <table>
   <tr><th>Setting</th><th>Value</th><th>Why</th></tr>
-  <tr><td>Model</td><td><code>medium.en</code>, int8</td>
-      <td>Benchmarked against fifteen alternatives on 3&nbsp;Oct and adopted on
-          4&nbsp;Oct once the new cooler made it affordable. See
-          <a href="#modelbench">4.7.2</a>.</td></tr>
   <tr><td>Threads</td><td>2</td><td>Traffic is sparse; peak power is heat.</td></tr>
   <tr><td>Beam size</td><td>1</td><td>Greedy. Roughly half the work of 2.</td></tr>
+  <tr><td>Chunk length</td><td>120&nbsp;s</td>
+      <td>Caps encoder memory. See <a href="#encmem">5.7.1</a>.</td></tr>
   <tr><td>Queue</td><td>Newest first, depth 12</td>
       <td>When behind, the top of the log stays current.</td></tr>
   <tr><td>Token cap</td><td>5 per second of audio</td>
-      <td>Speech runs 4&ndash;5. Bounds a runaway loop. Maximum 14 &mdash; see
-          <a href="#tokencap">4.7.1</a>.</td></tr>
+      <td>Applies to the second pass only, which is the engine that can loop.
+          Maximum 14 &mdash; see <a href="#tokencap">5.7.2</a>.</td></tr>
 </table>
 
-<p>The token cap deserves a note. Without it, a decoder that starts repeating
-runs to the model's 448-token ceiling, and a four-second clip was measured
-taking three minutes. Capping output to what the clip could plausibly contain
-bounds the worst case regardless of what the decoder does.</p>
+<div class="note">
+  <b>What the primary cannot do</b>
+  <p><code>onnx-asr</code> runs Parakeet with numpy and onnxruntime alone
+  &mdash; no PyTorch, no NeMo, no FFmpeg. That is why it fits comfortably on a
+  Pi, and it is also why <strong>keyword biasing is not available</strong>.
+  NeMo supports phrase boosting for this model, but it is a feature of the
+  NeMo decoder and needs the full stack. Vocabulary that would benefit from
+  biasing &mdash; station names, prowords &mdash; is handled after the fact
+  instead; see <a href="#prowords">5.8</a>.</p>
+</div>
 
-<h3 id="tokencap">4.7.1 The token cap is sized to the window, not the clip</h3>
+<h3 id="encmem">5.7.1 Encoder memory grows with the square of clip length</h3>
+
+<p>The Conformer encoder's attention is quadratic in input length. This is not
+a gentle curve. Feeding a 373-second recording in one piece raised resident
+memory by 3.2&nbsp;GB in a single step and pushed the real-time factor from
+0.12 to 0.43; a benchmark run that did this repeatedly was killed by the
+kernel at roughly 6&nbsp;GB.</p>
+
+<p>Audio is therefore split into chunks of <code>primary_chunk_s</code>
+(120&nbsp;s &mdash; raised from 30 once it was established that chunk
+length was never the cause of dropped openings; see
+<a href="#edges">5.7.4</a>). The cut does not land on a fixed boundary: the splitter searches
+&plusmn;2&nbsp;s around each nominal point for the quietest 100&nbsp;ms window
+and cuts there, so a chunk boundary falls in a pause rather than mid-word.</p>
+
+<div class="note">
+  <b>What resident memory actually does</b>
+  <p>Measured over 88 samples at fifteen-minute intervals: the process settles
+  at a <strong>resting floor</strong> set by the longest clip it has seen, with
+  <strong>transients of around 500&nbsp;MB</strong> while a long broadcast is
+  decoding. The transients are released. One excursion to 4,066,480&nbsp;kB
+  came back to 3,532,160&nbsp;kB &mdash; the same kilobyte it started from.</p>
+  <p>The floor ratchets rather than climbs. Fourteen hours of ordinary traffic
+  moved it 62&nbsp;MB; one hour of unusually long bulletins moved it 320&nbsp;MB
+  and then stopped. Between steps it is flat to the kilobyte. Because
+  <code>primary_chunk_s</code> caps what any single decode can ask for, the
+  ratchet has a ceiling &mdash; about 3.7&nbsp;GiB at rest and 4.2&nbsp;GiB at
+  peak on this receiver, against 7.9&nbsp;GiB of RAM.</p>
+  <p>So the thing to watch for is not a step after a long broadcast, which is
+  normal, but a floor that rises <em>between</em> them. Sampling
+  <code>VmRSS</code> from <code>/proc</code> every fifteen minutes is enough to
+  tell the two apart; the memory cgroup controller is disabled by default on
+  Raspberry Pi OS, so <code>systemd</code>'s own accounting reports nothing
+  without a change to the kernel command line and a reboot.</p>
+</div>
+
+<h3 id="tokencap">5.7.2 The token cap is sized to the window, not the clip</h3>
 
 <p>This is subtle enough to have shipped as a bug, so it is worth stating
 plainly: <code>max_new_tokens</code> is applied by faster-whisper
@@ -620,209 +930,407 @@ check for this yet.</p>
 retry path for an errored row. Recovering them means pulling the WAVs aside
 before they age out of the ring and decoding them by hand.</p>
 
-<h3 id="modelbench">4.7.2 What the model benchmark actually showed</h3>
+<h3 id="secondpass">5.7.3 When the second pass runs, and who wins</h3>
 
-<p>Sixteen faster-whisper models were run over two hand-transcribed clips on
-3&nbsp;October: a strong 48-second Ch22A bulletin and a weak 36-second Ch16
-safety call. Both transcripts were written out by ear first, so this is error
-rate against ground truth rather than models compared with each other.</p>
+<p>The second pass exists for one thing: <strong>digits</strong>. The primary
+reads prose better and never invents, but on a dense numeric readback the
+older model sometimes recovers a coordinate the primary mangles. So a
+transcript is re-decoded only when it looks like it contains a position
+&mdash; two or more numbers sitting next to a coordinate word. That fires on
+about one clip in twenty.</p>
 
-<table>
-  <tr><th></th><th colspan="3">clip 1 &mdash; 48&nbsp;s, strong</th>
-      <th colspan="3">clip 2 &mdash; 36&nbsp;s, weak</th></tr>
-  <tr><th>model</th><th>WER%</th><th>rtf</th><th>position</th>
-                    <th>WER%</th><th>rtf</th><th>position</th></tr>
-  <tr><td>large-v2</td><td>7.6</td><td>3.18</td><td>exact</td>
-      <td>25.4</td><td>3.33</td><td>exact</td></tr>
-  <tr><td>large-v1</td><td>9.5</td><td>3.19</td><td>exact</td>
-      <td>49.3</td><td>3.19</td><td>exact</td></tr>
-  <tr><td>large-v3</td><td>17.1</td><td>3.29</td><td>exact</td>
-      <td>59.2</td><td>3.62</td><td>digits only</td></tr>
-  <tr><td>medium</td><td>16.2</td><td>1.70</td><td>exact</td>
-      <td>74.6</td><td>2.18</td><td>digits only</td></tr>
-  <tr><td><b>medium.en</b></td><td>31.4</td><td>1.24</td><td>exact</td>
-      <td><b>40.8</b></td><td>1.49</td><td>no decimal point</td></tr>
-  <tr><td>small.en</td><td>32.4</td><td>0.48</td><td>exact</td>
-      <td>62.0</td><td>0.58</td><td>digits only</td></tr>
-  <tr><td>turbo</td><td>13.3</td><td>1.50</td><td>exact</td>
-      <td>42.3</td><td>1.90</td><td><b>GARBLED</b></td></tr>
-  <tr><td>small</td><td>28.6</td><td>0.54</td><td>exact</td>
-      <td>77.5</td><td>0.68</td><td><b>WRONG</b></td></tr>
-  <tr><td>distil-large-v3</td><td>18.1</td><td>1.39</td><td><b>WRONG</b></td>
-      <td>49.3</td><td>1.78</td><td><b>WRONG</b></td></tr>
-  <tr><td>distil-large-v2</td><td>29.5</td><td>1.42</td><td><b>WRONG</b></td>
-      <td>52.1</td><td>1.89</td><td><b>WRONG</b></td></tr>
-  <tr><td>distil-medium.en</td><td>38.1</td><td>0.61</td><td><b>WRONG</b></td>
-      <td>59.2</td><td>0.74</td><td><b>WRONG</b></td></tr>
-  <tr><td>distil-small.en</td><td>46.7</td><td>0.40</td><td><b>WRONG</b></td>
-      <td>102.8</td><td>0.41</td><td><b>WRONG</b></td></tr>
-  <tr><td>base.en</td><td>59.0</td><td>0.17</td><td><b>WRONG</b></td>
-      <td>78.9</td><td>0.13</td><td><b>MISSING</b></td></tr>
-  <tr><td>base</td><td>50.5</td><td>0.19</td><td><b>WRONG</b></td>
-      <td>119.7</td><td>0.27</td><td><b>WRONG</b></td></tr>
-  <tr><td>tiny.en</td><td>80.0</td><td>0.10</td><td>exact</td>
-      <td>131.0</td><td>0.12</td><td><b>WRONG</b></td></tr>
-  <tr><td>tiny</td><td>101.0</td><td>0.16</td><td>exact</td>
-      <td>146.5</td><td>0.15</td><td><b>WRONG</b></td></tr>
-</table>
-
-<p><em>rtf measured on four idle threads. Production runs two alongside the
-channelizer, so these are a floor, not a prediction.</em></p>
-
-<p><strong>Word error rate ranks these almost backwards from how useful they
-are.</strong> The position column &mdash; whether the latitude and longitude
-came through correctly &mdash; is the one that matters on a watchkeeper, and
-it disagrees with WER repeatedly. On the weak clip <code>turbo</code> beat
-<code>small.en</code> on WER and garbled the latitude; <code>small</code> beat
-nothing and got it wrong where <code>small.en</code> got it right.</p>
-
-<div class="warn-box">
-  <b>Every distilled model failed the position. Eight out of eight.</b>
-  <p><code>distil-large-v3</code> has the second-best WER of anything
-  practical and produced <code>3-13-13-129</code> for <code>33-13.279</code>.
-  <code>distil-large-v2</code> gave <code>118-17.75</code> for
-  <code>118-17.65</code> &mdash; one digit, about half a nautical mile.</p>
-  <p>Distillation removes decoder layers, and digit sequences are exactly what
-  needs careful decoding. Their attractive real-time factors are a trap: do
-  not use them here.</p>
-</div>
-
-<p><strong>Numbers survive better than words at every size.</strong> Ten of
-sixteen models got the strong clip's position exactly right, including
-<code>tiny.en</code>, whose surrounding prose is 80% wrong. It spelled the
-position out digit by digit and every digit was correct. Whisper decodes
-numbers far more reliably than it decodes language.</p>
-
-<p><strong>The dangerous errors are confident geographic inventions.</strong>
-On clip 1 <code>small.en</code> rendered "sector San Diego" as
-<b>North Carolina</b>, three times. On clip 2 it turned "southeast side of
-Catalina Island" into <b>North Catalina Highway</b>. <code>medium.en</code>
-got both right. That is the argument for the larger model, and it is not
-visible in WER at all &mdash; the two are within one point on clip 1.</p>
-
-<p><strong>Whisper mangles the procedure words.</strong> No model in the set
-produced <em>S&eacute;curit&eacute;</em> or <em>PAN PAN</em> correctly.
-Observed spellings include Securete, Securety, Secure&nbsp;Day, Kerate,
-Carat&nbsp;A, Carrot&nbsp;8, Caratay and "Here it takes"; PAN PAN came out as
-Pawn, POM&nbsp;POM and Pompom. Two of the three words that classify a
-transmission's urgency are therefore unreliable, which is the single largest
-remaining accuracy problem and is not solved by a bigger model. A fixed
-substitution table was considered and rejected: on weak signals the variants
-are too wild for one to catch.</p>
-
-<p>The scoring tool is <code>score_models.py</code>, and the two clips plus
-their hand transcripts are worth keeping as a regression set &mdash; they turn
-"did that change break transcription" into a thirty-second check.</p>
-
-<h3>4.8 Hallucination filters</h3>
-
-<p>Whisper was trained on audio paired with subtitles scraped from the web. On
-silence or noise it does not return nothing — it returns whatever text was
-statistically associated with silence in that training data, which is largely
-YouTube sign-offs. It also narrates sound effects, because subtitle files do.</p>
-
-<p>Six filters run on every transcript, each catching a shape the others miss:</p>
+<p>When both engines produce coordinates, they are compared rather than
+trusted in a fixed order:</p>
 
 <table>
-  <tr><th>Filter</th><th>Catches</th></tr>
-  <tr><td>Annotations</td><td><code>[sound of a horn]</code>, <code>*static*</code>, <code>♪♪</code>, <code>F***</code></td></tr>
-  <tr><td>Onomatopoeia</td><td><code>BANG!</code>, <code>CRASH!</code> — bare, unbracketed</td></tr>
-  <tr><td>Narration</td><td><code>Sound of a fire crackling.</code>, <code>Indistinct chatter.</code></td></tr>
-  <tr><td>Subtitle corpus</td><td><code>Thanks for watching</code>, <code>Please subscribe</code></td></tr>
-  <tr><td>Word loops</td><td><code>Gun, gun, gun,</code></td></tr>
-  <tr><td>Phrase loops</td><td><code>Thanks guys, thanks guys, thanks guys</code></td></tr>
-  <tr><td>Ellipsis tails</td><td><code>out. ... ... ... ... ...</code> &mdash; filler when the decoder runs past the audio</td></tr>
+  <tr><th>Rule</th><th>Decides</th></tr>
+  <tr><td>Agreement within 100&nbsp;m</td><td>Either; they read the same point.</td></tr>
+  <tr><td>Set overlap</td>
+      <td>On a multi-corner broadcast, the reading that shares more corners
+          with the other.</td></tr>
+  <tr><td>Fuller reading</td>
+      <td>The engine that found more coordinates coherently. A 450-second Navy
+          bulletin had the primary reading five corners cleanly while the
+          second pass lost the first digit and the thread.</td></tr>
+  <tr><td>Assumed hemisphere</td>
+      <td>Only above 50&nbsp;km. A guessed hemisphere never produces a 5&nbsp;km
+          error, so this rule must not be allowed to arbitrate a digit-level
+          disagreement.</td></tr>
+  <tr><td>Otherwise</td><td>The second pass, which is why it was run.</td></tr>
 </table>
 
-<p>Two design rules run through all of them.</p>
+<p>A coordinate that disagrees with the rest of its own message &mdash; more
+than 150&nbsp;km from every other position in the same broadcast, <em>and</em>
+on a hemisphere the parser inferred rather than heard &mdash; is dropped. Both
+conditions are required, and at least three coordinates must be present, so
+there is a cluster to be an outlier from.</p>
 
-<p><strong>Trim, do not discard.</strong> A transmission that decodes as
-"Islander traffic, K-104 K-104 K-104 K-104" contains two real words. Throwing
-away the whole transcript loses them. Every filter removes what it recognises
-and keeps the rest, marking the result unclear. The transcript is only
-discarded when nothing survives.</p>
+<p>The winning set is stored in <code>positions_json</code> on both the message
+ring and the permanent history, and the reason line names which engine won.
+The web interface reads the stored coordinate rather than re-parsing the
+displayed transcript, which is the primary engine's &mdash; without that, a
+coordinate the second pass was run specifically to recover would never reach
+the map.</p>
 
-<div class="warn-box">
-  <b>How that rule was broken, and fixed on 3 October</b>
-  <p><code>strip_subtitle_corpus()</code> split the transcript on sentence
-  punctuation and dropped any sentence containing boilerplate. Whisper
-  routinely omits the full stop before its outro, so the real speech and the
-  outro landed in <em>one</em> sentence and went out together &mdash; while a
-  trailing token loop, which had its own fragment, survived. A Ch16 safety
-  call decoded as:</p>
-  <pre>vessel sanctuary, vessel sanctuary, United States Coast Guard,
-safety, going channel 16, over Thank you for watching! you you you you</pre>
-  <p>and was logged as <code>you you you you</code>. The filter kept the
-  hallucination and discarded the transmission &mdash; the exact inversion of
-  the rule above.</p>
-  <p>Two defects compounded: the sentence splitter needed punctuation that was
-  not there, and the filter chain is <code>elif</code>, so once the subtitle
-  branch ran neither the blocklist nor the loop detector ever saw the result.
-  The fix cuts a matching part <em>at</em> the boilerplate, keeps the head, and
-  re-runs the loop trimmer on what is left.</p>
-  <p>Worth noting how it was caught: the message export prints
-  <code>Decoder said:</code> alongside the filtered transcript. Without that
-  line this reads as a bad decode rather than a filter bug. It also went
-  unnoticed for an unknown period &mdash; any transmission where Whisper ran
-  the outro on without punctuation was being mangled silently, and
-  <code>Roger standing by thanks for watching</code> was simply vanishing.</p>
+<h4>Why it no longer runs on silence</h4>
+
+<p>It used to also run when the primary returned nothing, on the theory that
+Parakeet might have been too conservative. Measured over a full day, that path
+fired 49 times and produced essentially nothing but invention: <em>Thanks for
+watching!</em> on five separate 40-second broadcasts, <em>The End</em> on four,
+spelled-out letter runs, and several paragraphs of confident narration about
+nothing. Of 49 firings, none recovered content worth keeping.</p>
+
+<p>No threshold rescued it either &mdash; the two highest-scoring survivors
+were themselves fabrications. <code>second_pass_on_empty</code> is therefore
+<code>false</code>, and silence from the primary is reported as silence.</p>
+
+<div class="note">
+  <b>Silence is usually correct</b>
+  <p>Of 140 empty results in a representative day, 86 arrived below 2&nbsp;dB
+  signal-to-noise and only three above 9&nbsp;dB. The one clean strong example
+  turned out to be a constant tone &mdash; which scores 100% readability,
+  because a pure tone is maximally structured, and contains no words at all.
+  The primary was right to say nothing.</p>
 </div>
 
-<p><strong>A readable recording is never discarded.</strong> The repetition
-filters work on text, and text alone cannot distinguish a Coast Guard station
-identifying itself three times &mdash; which is correct radio procedure &mdash;
-from a decoder stuck on a phrase. The audio can. If the readability score is
-at or above <code>keep_above_quality</code>, the transcript is trimmed where
-possible and kept regardless, marked unclear.</p>
+<h4>Handoff frequencies, and why they are not sent to it either</h4>
 
-<p>That threshold was 65, from aviation clips where real speech scored
-72&ndash;95% and invented text 47&ndash;52%. It is <strong>60</strong> as of
-27 September. On marine FM the whole readability scale is compressed &mdash;
-nothing scores below about 40 &mdash; so 65 sat far higher in the real
-distribution than it had on airband. A naval s&eacute;curit&eacute; broadcast
-scored 64, decoded correctly, and was discarded by one point: the speaker had
-repeated the announcement three times as the procedure requires, and the
-guard that exists precisely for that case did not fire. The trimmer could not
-rescue it either, because the repeats drifted in wording &mdash; "aircraft
-carrier" then "aircraft carriers" &mdash; so exact-match trimming found
-nothing to cut.</p>
+<p>The trigger needs two numbers beside a coordinate word. A frequency
+readback has one &mdash; <em>frequency 157 decimal 1 megahertz</em> yields a
+single hit &mdash; so the Channel&nbsp;22A handoff, the most repeated numeric
+phrase on this coastline, never reaches the second pass. That looked like an
+oversight worth fixing. It is not.</p>
 
-<p><code>keep_above_quality</code> must stay <em>above</em>
-<code>min_transcribe_quality</code> (see <a href="#gate">4.6.2</a>). Below it
-the guard is dead code, because nothing failing that gate ever reaches the
-decoder to be guarded. The receiver logs a warning at startup if the two are
-inverted, since nothing at runtime would reveal it &mdash; transmissions would
-simply start disappearing for repetition that was real.</p>
+<p>Eight handoffs were decoded by both engines and the audio then listened to
+by hand. Only the digits matter:</p>
 
-<p><strong>Standard calls are exempt, up to a point.</strong> Urgent traffic is
-formatted as exactly the repetition these filters look for — "mayday mayday
-mayday", "securite securite securite", "all stations, all stations, all
-stations". Suppressing those would be the worst failure this program could
-have. They are exempt, but only up to three repeats, because a real call is
-said three times and a decoder stuck on a word says it eleven.</p>
+<table>
+  <tr><th>Spoken</th><th>Primary (parakeet-tdt)</th><th>Second pass (medium.en)</th></tr>
+  <tr><td>157.1</td><td><code>157 decimal 1</code> &check;</td><td><code>157.1</code> &check;</td></tr>
+  <tr><td>157.1</td><td><code>157 decimal one</code> &check;</td><td><code>157.1</code> &check;</td></tr>
+  <tr><td>157.8</td><td><code>1578</code> &mdash; digits right, decimal missing</td><td><code>one five seven decimal eight</code> &check;</td></tr>
+  <tr><td>157.1</td><td><code>157 to 1</code> &mdash; digits right</td><td><code>C157, one megahertz</code> &cross;</td></tr>
+  <tr><td>157.1</td><td><code>157 decimal 1</code> &check;</td><td><code>scene 1-5-7-1</code> &cross;</td></tr>
+  <tr><td>157.1</td><td><code>1571</code> &mdash; digits right, decimal missing</td><td><code>157.1</code> &check;</td></tr>
+  <tr><td>157.1</td><td><code>1571</code> &mdash; digits right, decimal missing</td><td><code>E157</code> &cross;</td></tr>
+  <tr><td>157.1</td><td><code>157 decimal 1</code> &check;</td><td><code>one five seven decimal one</code> &check;</td></tr>
+</table>
 
-<h4>Repetition loops and the salvage pass</h4>
+<p>The primary got <strong>every digit right in all eight</strong>. Its four
+imperfect readings are formatting: the decimal is heard and not written.
+<code>medium.en</code> was outright wrong three times in eight, at a real-time
+factor of 1.27 to 2.97 &mdash; 31 to 59 seconds of decode for a 25-second
+clip.</p>
 
-<p>A decoder can fall into a loop and emit the same token over and over &mdash;
-<code>ATCG ATCG ATCG ATCG</code> across a thirty-second recording of perfectly
-good speech. Whisper's normal escape is the temperature ladder: a looping
-transcript always fails the compression-ratio check, which triggers a re-decode
-at the next temperature, and the randomness usually breaks the loop.</p>
+<div class="warn-box">
+  <b>The premise was backwards</b>
+  <p>This was measured in order to <em>extend</em> the trigger, on the
+  reasoning that the second pass is for digits and a frequency is digits. The
+  ground truth inverted it. On an isolated number the older model is the less
+  reliable of the two and five to ten times slower about it; its advantage is
+  on <em>dense</em> readbacks, where a coordinate is eight to twelve digits
+  with structure the decoder can lean on. That advantage does not transfer to
+  a lone four-digit number.</p>
+  <p>Recorded so it is not re-opened in six months: the handoff is a
+  formatting problem, and it is fixed in <a href="#prowords">5.8</a> by
+  inserting the decimal, not by decoding twice.</p>
+</div>
 
-<p>Presets that set <code>temperatures = [0.0]</code> to cap decode time have no
-ladder, so a loop is terminal and the transmission is lost. Rather than restore
-the full ladder &mdash; which re-decodes every marginal clip and was the source
-of the rtf&nbsp;6 and rtf&nbsp;9 outliers &mdash; a clip whose first pass is
-detected as a loop gets one salvage pass with
-<code>loop_retry_temperatures</code>, beam search and a tighter n-gram block.
-The result is accepted only if it is not itself a loop and carries more than a
-single word; otherwise the message is discarded as before.</p>
+<h3 id="edges">5.7.4 Edge treatment: trimming the squelch burst</h3>
 
-<p>The cost falls only on clips that would have been thrown away whole. A clean
-first pass still costs exactly one decode. Set
-<code>loop_retry_temperatures = []</code> to turn it off.</p>
+<p>Parakeet silently discards the opening of a transmission. Not garbled
+&mdash; absent, with confidence still reported as <code>ok</code> and no error
+raised. On one 28.8&nbsp;second Ch22A broadcast the transcript began at the
+date-time group, losing a <code>SECURITE</code>, three <em>all stations</em>
+and three station identifications.</p>
 
-<h3>4.9 Why there is no decoder prompt</h3>
+<p>The cause is not where it appears to be. Sweeping the input length shows
+the decoder's start point snapping to phrase boundaries rather than drifting:
+4&nbsp;s of input starts at 2.16&nbsp;s, 6&ndash;8&nbsp;s starts at
+3.76&nbsp;s, and from 10&nbsp;s onward it locks at 8.96&nbsp;s and never moves
+again &mdash; 12, 16, 20, 24 and 28.8&nbsp;s are identical. Those plateaus are
+the repeated phrase groups of a Coast Guard preamble. The model drops whole
+groups after a pause.</p>
+
+<p>The FastConformer encoder uses global attention, so an abrupt edge is not a
+local problem: it perturbs the representation of every frame. Captures open
+with a squelch burst and end mid-decay when the squelch closes, and
+<strong>the closing edge was corrupting the opening from 28 seconds
+away</strong>. Treating only the front recovered nothing. Treating both ends
+recovered the preamble.</p>
+
+<table>
+  <tr><th>Treatment</th><th>Proword</th><th><em>all stations</em></th><th>Characters</th></tr>
+  <tr><td>None</td><td>0</td><td>0</td><td>312</td></tr>
+  <tr><td>Front only</td><td>0</td><td>0</td><td>312</td></tr>
+  <tr><td>Both ends</td><td>1</td><td>2</td><td>508</td></tr>
+</table>
+
+<p class="meta">Measured during the investigation with 400&nbsp;ms trimmed and
+1&nbsp;s of silence padded onto each end. The padding was later removed &mdash;
+see below.</p>
+
+<p>Before decoding, <code>edge_treat()</code> cuts
+<code>edge_head_trim_ms</code> from the front and
+<code>edge_tail_trim_ms</code> from the back, then pads each end with
+<code>edge_head_pad_ms</code> and <code>edge_tail_pad_ms</code> of silence.
+Head and tail are separate values because the artefacts differ, and because
+they turned out to matter by very different amounts &mdash; see below. It runs
+once on the whole clip in
+<code>_pk_text</code>, before any chunking &mdash; doing it per chunk would
+cut real audio out of every seam.</p>
+
+<p>A trim is skipped entirely when a clip is too short to survive it, so a
+three-second vessel hail is left alone. Set any of the four to 0 to disable
+that edge.</p>
+
+<p><strong>In service: head trim 400&nbsp;ms, tail trim 100&nbsp;ms, both
+pads 0.</strong> Padding was adopted on the strength of the clip above and
+withdrawn two days later: it added 196 characters there and cost two other
+broadcasts about 80% of their text. Trimming alone carries the benefit, and
+costs no extra CPU &mdash; it removes audio rather than adding it.</p>
+
+<div class="warn-box">
+  <b>The head trim is the preroll</b>
+  <p><code>PREROLL_S</code> is 0.4&nbsp;s and <code>edge_head_trim_ms</code> is
+  400. That is not a coincidence in effect: the trim removes <em>exactly</em>
+  the pre-gate buffer. Measured across the 36-clip corpus, that buffer is
+  open-squelch hiss on 32 of 36 clips, sitting a median 14.6&nbsp;dB above the
+  post-gate floor &mdash; louder than the speech that follows. Speech starts at
+  or after the gate on 29 of 36, median 400&nbsp;ms later.</p>
+  <p>Two consequences. More preroll would add hiss, not recover syllables, so
+  raising it is the wrong move. And the two constants live in different places
+  with nothing tying them together, so changing either alone silently breaks
+  the other.</p>
+</div>
+
+<h4>The tail trim does almost nothing, and 400&nbsp;ms cost text</h4>
+
+<p>Every edge configuration in the round-2 bakeoff was symmetric, so the tail
+trim had never been justified on its own &mdash; it rode along with the head
+trim. Sweeping it separately, with the head held at 400&nbsp;ms:</p>
+
+<table>
+  <tr><th>Tail</th><th>Characters</th><th>Reg. openings</th><th>Verified</th>
+      <th>Sign-offs</th><th>Empty</th></tr>
+  <tr><td>0&nbsp;ms</td><td>15,990</td><td>18/18</td><td>4/4</td><td>23/36</td>
+      <td>4</td></tr>
+  <tr><td><strong>100&nbsp;ms</strong></td><td><strong>15,953</strong></td>
+      <td><strong>18/18</strong></td><td><strong>4/4</strong></td>
+      <td><strong>22/36</strong></td><td><strong>3</strong></td></tr>
+  <tr><td>200&nbsp;ms</td><td>15,918</td><td>18/18</td><td>4/4</td><td>22/36</td>
+      <td>3</td></tr>
+  <tr><td>400&nbsp;ms</td><td>15,812</td><td>18/18</td><td>4/4</td><td>18/36</td>
+      <td>3</td></tr>
+</table>
+
+<p>Openings are <em>identical</em> at every setting. The head trim does all of
+that work. What the 400&nbsp;ms tail was doing instead was eating closing
+prowords: five broadcasts got their sign-off back at 100&nbsp;ms, including one
+where truncating mid-word had manufactured a wrong word rather than a missing
+one (<code>&hellip;San Diego Apple</code> became <code>&hellip;San Diego
+out</code>). On a safety watch <code>over</code> and <code>out</code> are not
+decoration &mdash; one means a reply is expected, the other that the exchange
+is finished.</p>
+
+<p>Zero is not the answer either: it costs a two-second hail entirely, which
+decodes at every setting from 100&nbsp;ms up and comes back empty at 0.</p>
+
+<div class="note">
+  <b>What this is not</b>
+  <p>Several plausible explanations were measured and eliminated. It is not
+  chunking &mdash; the failing decodes are single unsplit calls. It is not the
+  duration head: clamping the frame skip to 1 forced the decoder to visit all
+  112 leading frames individually and it emitted blank for every one, so it
+  reads those frames and calls them silence rather than skipping them. It is
+  not a beam setting, because <code>onnx-asr</code> has no beam search for
+  this model at all. It is not quantisation alone &mdash; fp32 is better than
+  int8 but repaired only 3 of 19 affected clips. And it is not the squelch
+  burst by itself: replacing the burst with quiet while holding total length
+  constant reproduces the original transcript exactly.</p>
+</div>
+
+<div class="note">
+  <b>Since validated</b>
+  <p>The result above came from one recording, which was thin ground for a
+  production change. It has since been measured against a 36-clip stratified
+  corpus with ground truth established by ear, across 54 configurations
+  spanning seven architectures. <code>tdt-0.6b-v2</code> at fp32 with
+  400&nbsp;ms trims and no padding scored best of everything tested, and of
+  the symmetric trim lengths 400&nbsp;ms alone both recovered all four
+  verified failures and held full marks on the regression set. All three
+  <code>SECURITE</code> broadcasts now decode. That sweep varied both ends
+  together; separating them afterwards moved the tail to 100&nbsp;ms, above.</p>
+</div>
+
+<h3 id="prowords">5.8 Prowords, and why there is no phrase filter</h3>
+
+<p>This program used to carry a substantial filter chain: a blocklist of
+phrases Whisper is known to invent, a subtitle-credit corpus, a repetition
+detector, a trailing-boilerplate trimmer and a salvage pass. All of it is
+gone.</p>
+
+<p>It existed to clean up after one behaviour &mdash; an autoregressive
+decoder asked what follows silence &mdash; and the primary engine does not
+have that behaviour. Keeping the chain meant paying its cost without its
+benefit, and the cost was real: on a Channel 16 broadcast the repetition
+filter removed a long run of genuine text because a station had legitimately
+repeated itself, which is exactly what radio procedure requires. A filter
+that removes real traffic to catch a fault that no longer occurs is a net
+loss.</p>
+
+<p>What remains is <code>strip_annotations</code>, which removes bracketed
+markers such as <code>[MUSIC]</code>. That is not a phrase filter; it removes
+notation, not content.</p>
+
+<div class="warn-box">
+  <b>A poor transcript beats a fabricated one</b>
+  <p>This is the principle the whole design now rests on. A garbled reading
+  looks garbled and you go and listen. An invented one reads perfectly and you
+  believe it.</p>
+</div>
+
+<h4>Proword normalisation</h4>
+
+<p>The one thing that <em>is</em> rewritten is the preamble. Safety and
+urgency calls open with a phrase fixed by regulation and repeated three times
+&mdash; <em>"S&eacute;curit&eacute;, s&eacute;curit&eacute;,
+s&eacute;curit&eacute;, all stations, all stations, all stations"</em>
+&mdash; and an English-trained model has no idea what to do with the French.
+Twenty days of this receiver's own log produced, among others:</p>
+
+<pre><code>Security, security, security      Carrot take, carrot take
+Sure Disk, Cure Disk, Cure Day    Air safe, AirTays, Curitay
+Skirte, Skirte, Securite          New Jersey, New Jersey</code></pre>
+
+<p>Each repetition garbles independently, and so does the second half &mdash;
+<em>off stations</em>, <em>both stations</em>, <em>All Station, All Stations
+off Stations</em>, <em>off station's off station's off station</em>.</p>
+
+<p>Recognising a fixed procedural phrase is not guessing at what someone said,
+so the preamble &mdash; and only the preamble &mdash; is rewritten to its
+canonical form. Everything after it is left exactly as decoded, and
+<code>raw_transcript</code> keeps the original either way.</p>
+
+<p>Two tiers, and the difference matters:</p>
+
+<ul>
+  <li><strong>Strict</strong> patterns are words that do not occur in marine
+      voice by accident &mdash; the <code>sec&hellip;</code> family, the
+      pan/pawn/pon/bon family, mayday. Two occurrences near the head of a
+      message is enough on its own.</li>
+  <li><strong>Loose</strong> patterns are ordinary English &mdash;
+      <em>take care</em>, <em>palm</em>, <em>fan</em> &mdash; so they
+      additionally require the "all stations" run to follow before they count
+      for anything.</li>
+</ul>
+
+<p>When the shape of a preamble is there but nothing matches it, the message
+is flagged <em>unidentified safety preamble &mdash; listen to the recording</em>
+rather than guessed at. Mistaking a s&eacute;curit&eacute; for a PAN PAN is a
+safety error, and saying "I do not know" is the whole value of the flag.</p>
+
+<div class="note">
+  <b>"Hello all stations" is not a mis-decode</b>
+  <p>A routine scheduled marine information broadcast may open
+  <em>"Hello all stations, hello all stations, hello all stations"</em> with no
+  proword at all &mdash; that is correct procedure for a routine bulletin, and
+  it is left alone. The layer stays quiet on phrasing it does not recognise
+  rather than stamping a safety proword onto a broadcast that never said
+  one.</p>
+</div>
+
+<h4>The day-word homophones</h4>
+
+<p><code>SECURITE</code> is <em>say-cure-ee-tay</em>. The decoder lands the
+final syllable as "day" and the first as Thurs/care/chair/church, so a preamble
+arrives as <code>Good Thursday, sick Thursday, good Thursday</code>, or
+<code>Pick your case, take your day, pick your day</code>, or
+<code>Mr. Churchy, Christianity, Sunday</code>. None of those matched anything,
+so those broadcasts were flagged only by their <em>all stations</em> triple and
+the proword column read empty.</p>
+
+<p>Those patterns live in the loose tier, which fires only when a station run
+is present <strong>and</strong> two or more hits sit in front of it. A lone
+"Thursday" in a forecast cannot trigger it. Measured over 2,052 decodes across
+seven models: 43 new classifications, every one on a known safety broadcast,
+none on a hail. Of 91 weekday mentions inside a 160-character head carrying a
+station run, all 91 were garbled prowords &mdash; forecast dates fall outside
+the head window.</p>
+
+<p>A single strict hit also classifies when it abuts a station run. The
+preamble is said three times, so one surviving occurrence means the other two
+were mangled past recognition &mdash; and a lone "security" sitting directly in
+front of <em>all stations, all stations, all stations</em> is not ordinary
+English. Measured over 2,660 transcripts: 24 firings, all genuine.</p>
+
+<h4>Station name repair</h4>
+
+<p><code>Coast Guard Sector &lt;place&gt;</code> decodes correctly 77.3% of the
+time across 18,579 logged messages. The other 21.8% mangle into 253 distinct
+forms &mdash; <em>central, section, secretary, protector, perfective, hector,
+checker</em> &mdash; of which 165 occur once or twice. The tail is too long to
+enumerate and still growing.</p>
+
+<p>So the repair is anchored on the <strong>place</strong>, not on the mangled
+word: San Diego, Los Angeles, Long Beach and San Francisco are the real sector
+names for this coastline, and <code>Coast &lt;something&gt; &lt;place&gt;</code>
+is a sector with a high prior. Units that are genuinely not a sector &mdash;
+cutter, station, base, auxiliary, helicopter, rescue, vessel &mdash; are never
+rewritten. <code>Coast Guard Cutter Benjamin Bottoms</code> cannot match at
+all, because a cutter's name is not a place.</p>
+
+<div class="warn-box">
+  <b>This is the one inference in the pipeline</b>
+  <p>Normalising <code>Good Thursday</code> to <code>SECURITE</code> recovers a
+  word fixed in advance by regulation. Rewriting <code>Coast Perfect San
+  Diego</code> is an inference from a place name &mdash; well founded at a 77%
+  base rate, but still the only place the system asserts something the decoder
+  did not say.</p>
+  <p>That is why every repair appends a flag carrying the original text, which
+  reaches <code>reject_reason</code> and is visible in the log and the
+  database:</p>
+  <pre><code>station name corrected: "Coast Protector San Diego" -&gt; "Coast Guard Sector" (3 mentions)</code></pre>
+  <p>Nothing is corrected silently except the plural <code>Coast Guards
+  Sector</code>. The bare form <code>Coast Guard &lt;place&gt;</code> is also
+  left alone: nothing is mangled there, the name is simply said in its short
+  form, which is how people address them on the radio. Inserting
+  <em>Sector</em> into <em>"Roger, Coast Guard Los Angeles"</em> would edit
+  what was said rather than repair what was decoded.</p>
+</div>
+
+<h4>The run-together frequency</h4>
+
+<p>Marine VHF runs from 156 to 163&nbsp;MHz, so a frequency read out on air is
+always three digits, a decimal and one digit. When the decoder hears the
+decimal but writes nothing for it, what lands in the log is a four-digit
+number in front of <em>megahertz</em>:</p>
+
+<pre><code>frequency 1571 megahertz out   &rarr;   frequency 157.1 megahertz out
+frequency 1578 megahertz out   &rarr;   frequency 157.8 megahertz out</code></pre>
+
+<p>Because the band is only 7&nbsp;MHz wide, a four-digit number in that
+position has exactly one reading, which is what makes this repair safe. The
+pattern is deliberately that narrow &mdash; it matches 156.0 to 163.9 before
+<em>megahertz</em> or <em>MHz</em> and nothing else, so <code>3157
+megahertz</code> and <code>1571 kilohertz</code> are left alone. <strong>No
+digit is ever changed, added or removed.</strong> A decimal point is inserted,
+and that is the whole of it.</p>
+
+<p>Like every other repair it announces itself, in
+<code>reject_reason</code>:</p>
+
+<pre><code>frequency decimal restored: "1571 megahertz" -&gt; "157.1 megahertz"</code></pre>
+
+<p>This asserts less than the station-name repair does. The band edges are a
+fact about the radio service, not a prior about this coastline. It also does
+not correct a <em>wrong</em> frequency: one of the eight clips in
+<a href="#secondpass">5.7.3</a> has the watchstander reading out 157.8 where
+157.1 was meant, and the log carries 157.8, because what was said is what is
+recorded.</p>
+
+<h3>5.9 Why there is no decoder prompt</h3>
 
 <p>Whisper accepts an <code>initial_prompt</code> that conditions it on
 vocabulary. The marine presets deliberately supply none.</p>
@@ -839,58 +1347,111 @@ fabricated distress call. A poorly transcribed real transmission is
 recoverable: the audio is kept and the text is marked unclear. A fabricated one
 that reads correctly is not.</p>
 
-<h3>4.10 Distress flagging</h3>
+<h3 id="distress">5.10 Distress flagging</h3>
 
-<p>Any transcript containing distress vocabulary gets a red <strong>LISTEN</strong>
-badge, a tinted row, and a warning in the log.</p>
+<p>Distress vocabulary in a transcript raises a flag. The flag does not mean
+"this is an emergency" &mdash; it means <em>do not trust this text, play the
+audio</em>.</p>
 
-<p>The badge does not mean "this is an emergency". It means <em>do not trust
-this text, play the audio</em>. A real mayday and a hallucinated one are
-identical as text and the system cannot tell them apart — so rather than
-pretend otherwise, it flags the message and leaves the judgement to a person.
-The flag fires on real calls too, which is correct.</p>
+<p>The difficulty is volume. Matching the vocabulary alone fired on 105 of 411
+decoded messages in a representative day &mdash; 26% of all traffic &mdash;
+because <code>s&eacute;curit&eacute;</code> is itself distress vocabulary and
+the Coast Guard broadcasts scheduled weather and navigation bulletins all day
+long. Every one carried the same red badge as a mayday. An alarm that fires on
+a quarter of everything is not an alarm.</p>
 
-<h3>4.11 The quality score</h3>
+<p>It is therefore tiered, using the canonical proword that
+<a href="#prowords">5.8</a> has already identified:</p>
 
-<p>Each message carries a readability score from 0 to 100, shown as a
-percentage and used by the filter slider.</p>
+<table>
+  <tr><th>What was found</th><th>Treated as</th></tr>
+  <tr><td>Canonical <code>PAN PAN</code> or <code>MAYDAY</code></td>
+      <td><strong>Urgent.</strong></td></tr>
+  <tr><td>Canonical <code>SECURITE</code></td>
+      <td>Routine safety broadcast. No badge.</td></tr>
+  <tr><td>Distress vocabulary with <em>no</em> canonical proword</td>
+      <td><strong>Urgent.</strong></td></tr>
+</table>
+
+<p>That last row is the one that matters and the one it would be easiest to
+get wrong. Real incidents are worked conversationally, not announced:</p>
+
+<pre><code>Vessel taking on water, this is Coast Guard Sector San Diego
+  on Channel 16. What is your current position? Over
+
+Roger Sir, we understand you're taking on water.
+  We'll send help right away. Stand by
+
+Vessel that hailed May Day over the radio on Channel 16 just
+  south of the Coronado Bridge...</code></pre>
+
+<p>Not a proword anywhere in them. A formal preamble is what you can afford to
+tier; an unceremonious call for help is not. The tiering cuts 105 flags a day
+to 19 and the three real incidents in that sample all survive it.</p>
+
+<p>The capitalised forms are matched case-sensitively on purpose. No decoder
+writes <code>SECURITE</code> in capitals by itself &mdash; that spelling only
+exists because the proword layer was confident enough to canonicalise it. A
+lower-case <em>securite</em> means the layer was <em>not</em> confident, and
+that uncertainty should reach you rather than be filtered away.</p>
+
+<h4>The header banner</h4>
+
+<p>A badge on a row is no use once the row has scrolled away, and on a busy
+channel that takes minutes. So any urgent message in the last thirty minutes
+also lights a red <strong>DISTRESS</strong> chip in the page header, showing
+the age of the most recent one. Tapping it jumps to that message &mdash;
+relaxing the quality slider and unmuting the channel if your filters would
+otherwise have hidden it, which is the case that matters most, since a weak
+distress call is exactly what a quality filter removes.</p>
+
+<p>On a day with two active incidents the chip was lit for 253 minutes across
+five episodes, about 18% of the day. That is not noise: Sector San Diego
+relayed PAN PAN every fifteen minutes for nearly three hours, and the final
+broadcast of the sequence was the resolution &mdash; <em>"the previously
+reported vessel taking on water has been located"</em>.</p>
+
+<h3 id="quality">5.11 The readability score</h3>
+
+<p>Each message carries a score from 0 to 100, shown as a percentage beside
+the channel name and driving the filter slider.</p>
 
 <p>It is derived from the <strong>spectral flatness</strong> of the recording:
 the geometric mean of the voice-band spectrum divided by its arithmetic mean.
 Speech has formants, so its spectrum is lumpy and the ratio sits low
 (0.01&ndash;0.15). Noise and digital modes are flat and sit near 0.55.</p>
 
-<p>Calibrated against clips whose outcome is known:</p>
+<p>A slider cut around 60% separates the usable from the not, which is what
+the score is for. Its role is now <em>only</em> that: a human-facing filter.
+It no longer gates anything internally &mdash; there is no discard threshold
+since the phrase filters went, and the second pass is no longer triggered by
+an empty result.</p>
 
-<table>
-  <tr><th>Score</th><th>Outcome</th></tr>
-  <tr><td>93%</td><td>Full vessel traffic report, decoded correctly</td></tr>
-  <tr><td>92%</td><td>Coast Guard securit&eacute; broadcast, decoded correctly</td></tr>
-  <tr><td>84%</td><td>Coast Guard advisory, content plus a trailing loop</td></tr>
-  <tr><td>72%</td><td>Vessel name correct, sound effect appended</td></tr>
-  <tr><td>52%</td><td>Invented narration</td></tr>
-  <tr><td>47%</td><td>Few real words, rest invented</td></tr>
-</table>
-
-<p>A slider cut around 60% separates the usable from the not. The same score
-is used internally at 65% as the threshold below which a transcript may be
-discarded outright &mdash; see &sect;4.8.</p>
+<div class="warn-box">
+  <b>It measures structure, not speech</b>
+  <p>A constant tone scores 100%. It is maximally structured and contains no
+  words whatever. This is not a fault in the metric but it is a trap when
+  reading the log: a high score means "something with structure was received",
+  not "someone was talking".</p>
+  <p>The converse also holds. A 9-second transmission scoring 46% held real,
+  intelligible voice. Any threshold used to decide whether audio is worth
+  processing will throw away traffic.</p>
+</div>
 
 <div class="note">
   <b>Why not signal strength?</b>
-  <p>The obvious measure would be signal-to-noise, and it was tried. On FM it
-  does not work. The capture effect means a 40&nbsp;dB change in carrier
-  strength moves the discriminator noise metric by about 7&nbsp;dB — and more
+  <p>The obvious measure would be signal-to-noise, and it does not work on FM.
+  The capture effect means a 40&nbsp;dB change in carrier strength moves the
+  discriminator noise metric by about 7&nbsp;dB &mdash; and more
   fundamentally, it measures the carrier at <em>this</em> antenna, which says
-  nothing about a distant or noisy talker at the far end. Every badly
-  transcribed clip on record arrived with a perfectly good carrier. Flatness
-  measures what actually arrived.</p>
-  <p>The carrier figure is still computed and appears in the message export as
-  <strong>Carrier</strong>, where it is useful for telling a weak link from a
-  noisy talker.</p>
+  nothing about whether the person at the other end was intelligible. A strong
+  carrier carrying a keyed microphone scores well and contains nothing.</p>
+  <p>Both numbers are recorded, and both are shown. Readability answers "are
+  there words in here"; signal-to-noise answers "how well did it arrive". They
+  are different questions.</p>
 </div>
 
-<h3>4.12 Positions</h3>
+<h3>5.12 Positions</h3>
 
 <p>The Coast Guard reads out positions constantly, in degrees and decimal
 minutes &mdash; <em>"position 33-01.923 north, 117-22.636 west"</em>. Those are
@@ -922,6 +1483,16 @@ worth knowing about, because both appear in ordinary traffic:</p>
       water" is not a coordinate. Number words are read as digits only in a run
       of two or more, or next to a separator a position would have.</li>
 </ul>
+
+<p>Tens and teens read as words &mdash; <em>"thirty three"</em>,
+<em>"forty seven"</em> &mdash; are expanded too. <code>hundred</code> is
+deliberately not: in this traffic it is almost always a time.
+<em>Niner</em> is understood; <em>tree</em> and <em>fife</em> are not, because
+both are ordinary English and mapping them would let the parser manufacture a
+position out of prose.</p>
+
+<p>When a message looks like it carries a position, a second engine reads it
+too and the two are compared &mdash; see <a href="#secondpass">5.7.3</a>.</p>
 
 <p>A position is only accepted with an explicit hemisphere, minutes below 60,
 latitude within 90 and longitude within 180. That combination rejects the
@@ -996,7 +1567,7 @@ hemisphere is placed in whichever one is nearer home &mdash; and still has to
 pass the distance check. Those are marked <em>hemisphere assumed</em> in the
 export and in the pin's tooltip.</p>
 
-<h3>4.13 Retention</h3>
+<h3>5.13 Retention</h3>
 
 <p>The database keeps the most recent <code>max_messages</code> rows — 100 by
 default, 2000 on the boat since 4 October — and deletes the oldest by message id. Nothing else is considered:
@@ -1032,9 +1603,49 @@ roughly 1&nbsp;MB per thirty-second message.</p>
   <code>webui.py</code> has its own fetch limit, and the page shows only what
   it asks for. Raise one without the other and the log silently displays a
   fraction of what is retained, with nothing to indicate it.</p>
-  <p>At the measured 245&nbsp;KB per recording, 2000 messages is about
-  490&nbsp;MB &mdash; 64% of the 768&nbsp;MB tmpfs. Check with
-  <code>df -h ~/watchkeeper/audio</code> before raising it further.</p>
+  <p>Second pair: <code>max_messages</code> and the size of the tmpfs. The
+  ring has to fit in the mount, and the rule is</p>
+  <pre><code>max_messages  &times;  mean duration  &times;  32 KB/s   &le;   tmpfs size</code></pre>
+  <p>Measured 7&nbsp;October: mean duration 12.3&nbsp;s, so 386&nbsp;KB a
+  recording and 771&nbsp;MB for a 2000-message ring. The mount was 768&nbsp;MB
+  and it filled.</p>
+</div>
+
+<div class="warn-box">
+  <b>The sizing figure goes stale on its own</b>
+  <p>Mean recording size drifts with what the receiver is hearing and with
+  every change to the squelch, the channel list or the gate. It has moved by
+  more than 50% inside a week, which was enough to overrun a mount sized from
+  the earlier figure. Re-measure it after any such change rather than trusting
+  a number written here.</p>
+  <p><strong>Mean recording size is not a constant of the installation.</strong>
+  It rises whenever the receiver hears more or hears longer: a larger speech
+  model keeps marginal traffic that used to be discarded, extra channels add
+  their own traffic, and a bigger <code>max_message_s</code> raises the mean
+  directly. Each of those happened here between the two measurements.</p>
+  <p>Re-measure after any of them:</p>
+  <pre><code>sqlite3 ~/watchkeeper/watchkeeper.db \
+  "SELECT ROUND(AVG(duration_s),1) AS mean_s,
+          ROUND(AVG(duration_s)*32/1024,3) AS mean_MB,
+          ROUND(2000*AVG(duration_s)*32/1024) AS ring_MB
+     FROM history WHERE started_at >= datetime('now','-7 days');"
+df -h ~/watchkeeper/audio</code></pre>
+  <p>Leave real headroom rather than fitting exactly: the mount is now
+  1&nbsp;GB against a ring that wants about 790&nbsp;MB at
+  <code>max_message_s = 450</code>.</p>
+</div>
+
+<div class="note">
+  <b>Corrections are not pruned</b>
+  <p>A <a href="#correcting">hand-typed transcript</a> is keyed on
+  <code>(started_at, channel)</code> in a table of its own, so it survives
+  what everything else here does not: eviction from the ring,
+  <code>refresh.sh</code>, and the startup sweep that drops rows whose WAV has
+  gone. The audio and the message row go; the words you typed stay, and
+  reappear in search and the export through <code>history</code>.</p>
+  <p>That is the point of storing them separately, and it is also the reason
+  they are worth backing up &mdash; they are the only rows in the database
+  that cannot be regenerated from the recordings.</p>
 </div>
 
 <p>Briefs follow the same shape with their own number.
@@ -1044,7 +1655,7 @@ every pruner in this system follows, so that the thing you lose is always the
 thing you were least likely to want. They are small enough that the cap is
 about tidiness rather than space.</p>
 
-<h3 id="history">4.14 History and the thermal series</h3>
+<h3 id="history">5.14 History and the thermal series</h3>
 
 <p>Two tables sit alongside <code>messages</code> and are never pruned with
 it. Both exist because the live log is the wrong shape for analysis.</p>
@@ -1109,7 +1720,7 @@ seconds held and queue depth. The cursor position is scaled from screen pixels
 back into viewBox units before the time axis is inverted, so it stays accurate
 at any window width, and it works by drag on a touchscreen.</p>
 
-<h3>4.15 Thermal governor</h3>
+<h3>5.15 Thermal governor</h3>
 
 <p>Transcription is the hottest thing the program does.</p>
 
@@ -1163,7 +1774,7 @@ newest-first, whatever piles up during a pause is the oldest and least
 interesting.</p>
 
 <!-- ========================================================= -->
-<h2 id="files">5. Files</h2>
+<h2 id="files">6. Files</h2>
 
 <h3>Programs</h3>
 <table>
@@ -1198,27 +1809,32 @@ alongside the programs so they travel with the rest of the software.</p>
 <table>
   <tr><th>File</th><th>Purpose</th></tr>
   <tr><td><code>test_dsp.py</code></td><td>DSP test suite. Run after any change to the signal path.</td></tr>
-  <tr><td><code>make_truth.py</code></td><td>Build a ground-truth corpus by ear, for benchmarking.</td></tr>
+  <tr><td><code>make_truth.py</code></td><td>Archive recordings off the tmpfs mount onto the card, and transcribe by ear for comparison.</td></tr>
   <tr><td><code>bench_models.py</code></td><td>Compare speech models against that corpus.</td></tr>
   <tr><td><code>bench_hailo.py</code></td><td>The same, on the NPU.</td></tr>
   <tr><td><code>run_bench.py</code></td><td>Runs the whole benchmark suite unattended.</td></tr>
   <tr><td><code>analyse_bench.py</code></td><td>Re-cuts saved benchmark results without re-running.</td></tr>
-  <tr><td><code>fetch_hallucinations.py</code></td><td>Builds a filter list from the public whisper-hallucinations dataset.</td></tr>
 </table>
 
 <h3>Data</h3>
 <table>
   <tr><th>Path</th><th>Contents</th></tr>
   <tr><td><code>~/watchkeeper/watchkeeper.db</code></td>
-      <td>SQLite, WAL mode. Messages, transcripts, reception context.</td></tr>
+      <td>SQLite, WAL mode. Messages, transcripts, reception context, the
+          permanent <code>history</code> table, the <code>thermal</code>
+          series, and <code>corrections</code> &mdash;
+          <a href="#correcting">transcripts typed by hand</a>, which is the
+          one table the web interface writes.</td></tr>
   <tr><td><code>~/watchkeeper/audio/</code></td>
       <td>One WAV per message. <strong>On tmpfs — see below.</strong></td></tr>
   <tr><td><code>~/wx_corpus/</code></td>
-      <td>Benchmark corpus and <code>truth.json</code>. On the card, persistent.</td></tr>
+      <td>Archived recordings, and hand transcripts where any have been made. On the card, persistent.</td></tr>
   <tr><td><code>~/watchkeeper/briefs/</code></td>
       <td>One JSON file per <a href="#brief">AI brief</a>, named for the UTC
-          minute it was written, holding the report, its KML, and what was
-          asked. Small &mdash; tens of kB each.</td></tr>
+          minute it was written, holding the report, its KML, the filters, and
+          &mdash; since 2 November &mdash; the prompt that was sent, which is
+          what makes a brief <a href="#briefexport">exportable</a>. A few
+          hundred kB each because of it; they were tens of kB before.</td></tr>
   <tr><td><code>~/run.log</code></td>
       <td>Only if <code>--log</code> was used on a hand-started run. Append-only,
       <strong>no rotation</strong> — it grows without limit on the card. The
@@ -1242,14 +1858,14 @@ alongside the programs so they travel with the rest of the software.</p>
 
 <p>The mount is configured in <code>/etc/fstab</code>:</p>
 <pre><code>tmpfs /home/pi/watchkeeper/audio tmpfs \
-      defaults,nofail,noatime,size=256M,uid=1000,gid=1000,mode=0755 0 0</code></pre>
+      defaults,nofail,noatime,size=1536M,uid=1000,gid=1000,mode=0755 0 0</code></pre>
 
 <p><code>nofail</code> matters: without it a malformed line drops the machine
 into emergency mode at boot rather than carrying on, which on a headless Pi
 means it never comes back.</p>
 
 <!-- ========================================================= -->
-<h2 id="config">6. Configuration</h2>
+<h2 id="config">7. Configuration</h2>
 
 <p>Everything lives in <code>watchkeeper.toml</code>. It is searched for in
 this order, first match wins:</p>
@@ -1259,9 +1875,9 @@ this order, first match wins:</p>
   <li><code>~/watchkeeper/watchkeeper.toml</code></li>
 </ol>
 
-<p>The file has three kinds of section. Settings are validated at load, so a
+<p>The file has four kinds of section. Settings are validated at load, so a
 typo or an out-of-range value is reported at startup rather than misbehaving
-later.</p>
+later &mdash; with one exception noted under <code>[web]</code> below.</p>
 
 <h3><code>[storage]</code></h3>
 <table>
@@ -1275,7 +1891,7 @@ later.</p>
 <table>
   <tr><th>Key</th><th>Meaning</th></tr>
   <tr><td><code>gain</code></td><td>Tuner gain in dB. <code>"0"</code> selects the tuner's own AGC.
-      On the boat this is 15.7 &mdash; see <a href="#intermod">4.6.1</a> for why it is so low.</td></tr>
+      On the boat this is 15.7 &mdash; see <a href="#intermod">5.6.1</a> for why it is so low.</td></tr>
   <tr><td><code>target_rms</code></td>
       <td>Output level as a fraction of full scale. 0.2 is about &minus;14&nbsp;dBFS.</td></tr>
   <tr><td><code>max_norm_gain_db</code></td>
@@ -1283,11 +1899,30 @@ later.</p>
       Raise it with <code>target_rms</code>, never alone.</td></tr>
   <tr><td><code>min_transcribe_quality</code>, <code>min_transcribe_s</code></td>
       <td>Skip the decode for clips below this readability or length. Audio is still kept.
-      See <a href="#gate">4.6.2</a>. 0 disables.</td></tr>
+      See <a href="#gate">5.6.2</a>. 0 disables.</td></tr>
   <tr><td><code>always_transcribe</code></td>
       <td>Channel names exempt from both gates.</td></tr>
   <tr><td><code>ppm</code></td><td>Crystal error correction. The V4's TCXO needs none.</td></tr>
-  <tr><td><code>model</code></td><td>Whisper model. <code>small.en</code>.</td></tr>
+  <tr><td><code>primary_model</code>, <code>primary_quant</code></td>
+      <td>The transducer that reads every message. See <a href="#transcribe">5.7</a>.
+      <code>primary_quant = "none"</code> selects fp32.</td></tr>
+  <tr><td><code>primary_model_path</code></td>
+      <td>A plain directory holding the model and its <code>.data</code> file side by side.
+      Required for fp32: the Hugging Face cache stores every file as a symlink and ONNX
+      Runtime refuses to follow external data out of the resolved directory.</td></tr>
+  <tr><td><code>edge_head_trim_ms</code>, <code>edge_tail_trim_ms</code></td>
+      <td>Audio cut from each end before decoding. Head 400, tail 100 &mdash; they
+      are not symmetric, and the head value must track <code>PREROLL_S</code>.
+      See <a href="#edges">5.7.4</a>.</td></tr>
+  <tr><td><code>edge_head_pad_ms</code>, <code>edge_tail_pad_ms</code></td>
+      <td>Silence added to each end after trimming. Both 0 in service: padding
+      was measured and withdrawn. See <a href="#edges">5.7.4</a>.</td></tr>
+  <tr><td><code>primary_chunk_s</code></td>
+      <td>Chunk length fed to the encoder. Caps memory &mdash; see <a href="#encmem">5.7.1</a>.</td></tr>
+  <tr><td><code>second_model</code>, <code>second_idle_release_s</code></td>
+      <td>The coordinate second pass and how long it stays resident.</td></tr>
+  <tr><td><code>second_pass_on_empty</code></td>
+      <td>Whether to re-decode a silent result. <code>false</code> &mdash; see <a href="#secondpass">5.7.3</a>.</td></tr>
   <tr><td><code>cpu_threads</code>, <code>beam_size</code></td><td>Decoder cost.</td></tr>
   <tr><td><code>temperatures</code></td><td>Fallback ladder. A single entry disables retries.</td></tr>
   <tr><td><code>max_messages</code></td><td>Rows kept, oldest deleted first. Default 100.</td></tr>
@@ -1337,9 +1972,8 @@ leak between presets.</p>
           already established that something transmitted.</td></tr>
   <tr><td><code>no_speech_threshold</code>, <code>log_prob_threshold</code></td>
       <td>Raised on marine to keep marginal speech.</td></tr>
-  <tr><td><code>max_tokens_per_second</code></td><td>Output cap, in tokens per second of audio. 8 is generous. <strong>Maximum 14.</strong> The value handed to the decoder is <code>30 &times; this + 16</code>, against Whisper's 448-token context; faster-whisper raises rather than clamping, so 15 makes every message fail. See <a href="#tokencap">4.7.1</a>.</td></tr>
-  <tr><td><code>prompt</code></td><td>Decoder priming. Absent on marine — see §4.9.</td></tr>
-  <tr><td><code>hallucination_list</code></td><td>Optional generated phrase list.</td></tr>
+  <tr><td><code>max_tokens_per_second</code></td><td>Output cap, in tokens per second of audio. 8 is generous. <strong>Maximum 14.</strong> The value handed to the decoder is <code>30 &times; this + 16</code>, against Whisper's 448-token context; faster-whisper raises rather than clamping, so 15 makes every message fail. See <a href="#tokencap">5.7.1</a>.</td></tr>
+  <tr><td><code>prompt</code></td><td>Decoder priming. Absent on marine — see §5.9.</td></tr>
   <tr><td><code>thermal_pause_above</code> etc.</td><td>Thermal governor. 0 disables.</td></tr>
 </table>
 
@@ -1354,8 +1988,25 @@ stay inside the flat part of the capture. Choose a centre that is clear of every
 channel by at least 37.5&nbsp;kHz and off the 25&nbsp;kHz channel grid, so the
 tuner's DC spike lands in empty spectrum.</p>
 
+<h3><code>[web]</code> &mdash; what the interface offers</h3>
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>thermal_report</code></td>
+      <td><code>true</code> by default. <code>false</code> removes the
+          <strong>Thermal report</strong> link from the header and makes both
+          <code>/report</code> and <code>/api/thermal</code> answer 404.
+          See <a href="#thermalopt">10</a>.</td></tr>
+</table>
+
+<p>Read by <code>webui.py</code> on each request rather than at startup, so an
+edit here takes effect on the next page load with no restart. The cost of that
+is the exception to validation above: an unknown key under <code>[web]</code>
+is reported in the web service's journal and ignored, rather than refusing to
+start. <code>[ai]</code> behaves the same way and is documented with the
+<a href="#brief">brief</a>.</p>
+
 <!-- ========================================================= -->
-<h2 id="presets">7. Presets</h2>
+<h2 id="presets">8. Presets</h2>
 
 <table>
   <tr><th>Preset</th><th>Mode</th><th>Centre</th><th>For</th></tr>
@@ -1395,7 +2046,7 @@ rtl_power -f 156M:158M:5k -g 36.4 -i 5 -e 2h ~/scan.csv</code></pre>
 </div>
 
 <!-- ========================================================= -->
-<h2 id="cli">8. Command line reference</h2>
+<h2 id="cli">9. Command line reference</h2>
 
 <h3><code>watchkeeper.py</code></h3>
 <table>
@@ -1438,18 +2089,49 @@ this cannot test, since it is baked into the capture.</p>
 </table>
 
 <!-- ========================================================= -->
-<h2 id="webui">9. The web interface</h2>
+<h2 id="webui">10. The web interface</h2>
 
 <p>Served on port 8080, read-only, and completely independent of the
 watchkeeper — it opens the database read-only, so it can be started, stopped
 and restarted without disturbing reception.</p>
 
 <h3>The header</h3>
-<p>Live indicator, message counts, and two chips that stay visible with the
-settings panel closed: <strong>AUTO</strong> when autoplay is on, and a red
-<strong>THROTTLED</strong> when the Pi is currently running below full speed.</p>
+<p>Live indicator, message counts, and three chips that stay visible with the
+settings panel closed: <strong>AUTO</strong> when autoplay is on,
+<strong>THROTTLED</strong> when the Pi is running below full speed, and a red
+<strong>DISTRESS</strong> when urgent traffic has been heard in the last thirty
+minutes. The last of these is a button &mdash; it jumps to the message, and
+relaxes the filters first if they would have hidden it. See
+<a href="#distress">5.10</a>.</p>
 
-<h3>Search &mdash; /search</h3>
+<p>Inside the settings panel, below the links, are the two controls that put
+the log into a mode: <strong>Correct text</strong> and <strong>Download
+multi</strong>, in that order. Each replaces the download arrow on every row
+with something else, and each becomes its own cancel &mdash;
+<strong>Cancel Correction</strong>, <strong>Cancel Download</strong> &mdash;
+because a button that spawns a second control has to be the one that takes it
+away again. The two are mutually exclusive; entering one leaves the other.
+<strong>Download multi</strong> is the right-hand of the pair deliberately,
+since its <strong>Download</strong> button appears to its right and would
+otherwise straddle an unrelated control.</p>
+
+<p id="thermalopt">The <strong>Thermal report</strong> link is present only
+when <code>thermal_report</code> is true under <code>[web]</code>. It is
+removed rather than greyed out: a link to a page that answers 404 is worse
+than no link. The setting governs the <em>report</em> and not the sampling
+&mdash; <code>watchkeeper.py</code> goes on filling the <code>thermal</code>
+table on <code>thermal_sample_s</code> and pruning it on
+<code>thermal_history_days</code>, so the history is intact if the page is
+ever wanted back, and those two settings are where to stop the collection
+itself.</p>
+
+<p>Responses are gzipped. The live log polls the whole message ring every three
+seconds, which is 909&nbsp;KB of JSON uncompressed and about 150&nbsp;KB
+compressed; over a metered uplink the difference is roughly 35&nbsp;GB a day
+against 6 for a single open tab. Audio is excluded, as are partial
+(206) responses, because compressing a byte range breaks playback.</p>
+
+<h3 id="searchpage">Search &mdash; /search</h3>
 <p>Finds text across every transcript in the permanent <code>history</code>
 table, not just the recordings still in the live log. Terms are combined with
 AND; a phrase in double quotes matches whole. <code>%</code> and
@@ -1473,8 +2155,7 @@ the WAV is not. Three things remove one:</p>
 
 <p>So if a search turns up something whose audio matters, download the zip
 immediately. Once it is gone the transcript is all that remains, and
-<a href="#modelbench">4.7.2</a> is the reason not to trust a transcript
-alone.</p>
+the transcript is not something to rely on alone.</p>
 
 <p><b>in log</b> jumps to that message in the main log so it can be read in
 context. The quality and length sliders and the mute set are relaxed only if
@@ -1531,7 +2212,7 @@ It opens Google Maps framed to show that point <em>and</em> where you are, so
 the scale tells you whether something is close or on the far side of the
 bight &mdash; a pin on its own opens at street level and says nothing useful.
 Hovering shows the position in degrees and decimal minutes. See
-<a href="#theory">&sect;4.12</a> for what is and is not recognised.</p>
+<a href="#theory">&sect;5.12</a> for what is and is not recognised.</p>
 
 <h3>The coordinate converter</h3>
 <p>At the bottom of the settings panel is a box for typing a position in the
@@ -1556,8 +2237,8 @@ context, decoder diagnostics, and an audio analysis:</p>
 TRANSCRIPTION
   Confidence          : empty
   avg_logprob         : -0.39
-  Discarded because   : subtitle-corpus hallucination
-  Decoder said        : "...Thanks for watching. Please subscribe."
+  Flags               : coordinate: second (default)
+  Second pass said    : "...32-33.300 north, 117-11.000 west" 
 
 AUDIO ANALYSIS
   spectral flatness   : 0.084   (voice 0.01-0.15, noise ~0.55)
@@ -1568,6 +2249,102 @@ AUDIO ANALYSIS
 two most useful lines when a message reads "no speech found" — they show
 whether the decoder returned nothing or said something that a filter removed,
 and which filter did it.</p>
+
+<h3 id="downloadmulti">Several at once &mdash; Download multi</h3>
+
+<p><strong>Download multi</strong> turns every row's download arrow into a
+checkbox, in the same cell, so the layout does not shift. Tick the
+transmissions that make up an exchange and <strong>Download&nbsp;(n)</strong>
+returns one zip: a WAV and a text note per message, as the single download
+produces, plus <code>summary.json</code>.</p>
+
+<p>The manifest is what makes it an archive rather than a folder of WAVs. Per
+message it carries the channel, frequency, timestamp, duration, SNR,
+readability, status, the transcript, the second pass's reading, the adjudicated
+position, and the names of that message's two files, so the zip can be read by
+something other than a person.</p>
+
+<p>Messages are ordered oldest first &mdash; an exchange should read in the
+order it was heard, not in the newest-first order the log displays. Four things
+behave in ways worth knowing:</p>
+
+<table>
+  <tr><th>Situation</th><th>What happens</th></tr>
+  <tr><td>The recording has been pruned</td>
+      <td>The note is still written, with the analysis section saying the audio
+          is gone, and <code>"audio": null</code> in the manifest. On older
+          selections this is the normal case, not the exception &mdash; WAVs
+          leave long before their rows do.</td></tr>
+  <tr><td>A message ages out between selecting and downloading</td>
+      <td>Listed under <code>not_found</code> in the manifest. A zip that came
+          back quietly short would be worse than one that says so.</td></tr>
+  <tr><td>Two transmissions in the same second on one channel</td>
+      <td>The filename stem is built from exactly those two things, so the
+          second gets its message id appended. Without that, one file would
+          overwrite the other inside the zip.</td></tr>
+  <tr><td>A filter hides a row that is ticked</td>
+      <td>It leaves the selection on the next poll, so the count always
+          matches what is on screen.</td></tr>
+</table>
+
+<p>Capped at 100 messages and 150&nbsp;MB, each refusing with the actual
+figure rather than truncating. The zip is built in memory, and on this machine
+memory is the thing most worth protecting &mdash; see
+<a href="#encmem">5.7.1</a>.</p>
+
+<h3 id="correcting">Correcting a transcript &mdash; Correct text</h3>
+
+<p><strong>Correct text</strong> turns each row's download arrow into a
+<strong>Correct</strong> button. Pressing it turns that message into a text box
+holding the current text, and the button into <strong>Update</strong>; editing
+and pressing Update writes the result to the database. The row is then tagged
+<strong>EDITED</strong>, so a hand-typed transcript is never silently
+attributed to the decoder.</p>
+
+<div class="warn-box">
+  <b>The decoder's reading is never destroyed</b>
+  <p>Corrections go into a table of their own, not over the top of
+  <code>messages.transcript</code>. The machine's text is captured the first
+  time a message is corrected and then left alone for good: a second edit
+  refines your correction, it does not rewrite what the decoder said.</p>
+  <p>This is the same rule <a href="#limits">13</a> applies to an LLM pass.
+  Anything that is not the decoder's output sits <em>beside</em> it,
+  attributed, and never replaces it. A person typing is far more trustworthy
+  than a language model guessing, but the reason for keeping both is
+  unchanged: comparing the two is the only way to tell a bad decode from a bad
+  configuration.</p>
+</div>
+
+<p>A correction is keyed on <code>(started_at, channel)</code>, which is
+<code>history</code>'s own unique key and how <code>webui.py</code> already
+joins the two tables. Keying it on the message id would have been the obvious
+choice and was wrong: <code>history</code> carries no message id of its own,
+so a correction would have vanished from search and the export the moment the
+WAV aged out of the ring.</p>
+
+<p>Once stored, the correction is what the log, <a href="#searchpage">search</a>,
+the <a href="#exportpage">export</a> and the <a href="#brief">AI brief</a> all
+show. The two downloads carry it as the transcript with
+<code>Corrected by hand</code> and <code>Decoder had "&hellip;"</code> beside
+it. Two consequences of that:</p>
+
+<ul>
+  <li>Searching the decoder's original words will no longer find the row. You
+      corrected it so the garble would stop surfacing, which is the intended
+      behaviour, but it does mean the original is reachable only through the
+      download, the export or the table itself.</li>
+  <li>Typing into a row stored as <em>no speech found</em> makes it searchable
+      like any other message. That turns this into a way to rescue traffic the
+      decoder gave up on, which given <a href="#quality">5.11</a> is probably
+      its most valuable use.</li>
+</ul>
+
+<p>Blanking the box is refused rather than treated as undo; there is no revert
+in the interface. To drop a correction and go back to the decoder's reading,
+delete its row:</p>
+
+<pre><code>sqlite3 ~/watchkeeper/watchkeeper.db \
+  "DELETE FROM corrections WHERE msg_id = 12345;"</code></pre>
 
 <h3 id="exportpage">Export page &mdash; /export</h3>
 <p>A form over the endpoint below, reached from <b>Export</b> in the settings
@@ -1656,7 +2433,7 @@ feed leaves out: <code>gain_db</code>, <code>rtf</code>,
           failed, and anything the decoder returned as whitespace. On a quiet
           channel this is most of what gets logged.</td></tr>
   <tr><td><code>min_quality</code></td>
-      <td>Readability floor, 0&ndash;100. See <a href="#gate">4.6.2</a> for
+      <td>Readability floor, 0&ndash;100. See <a href="#gate">5.6.2</a> for
           what the number means.</td></tr>
   <tr><td><code>min_duration</code></td>
       <td>Shortest transmission to include, in seconds.</td></tr>
@@ -1687,16 +2464,16 @@ response says so in <code>filters.threshold_note</code>, and
 out downstream if the analysis cannot tolerate them.</p>
 
 <pre><code># everything
-curl -s http://apogeerpivhf.local:8080/api/export | jq '.total'
+curl -s http://radiolog.local:8080/api/export | jq '.total'
 
 # Ch16 and Ch22A, last six hours, oldest first
-curl -s 'http://apogeerpivhf.local:8080/api/export?channel=16,22A&amp;hours=6&amp;order=asc'
+curl -s 'http://radiolog.local:8080/api/export?channel=16,22A&amp;hours=6&amp;order=asc'
 
 # one calendar day, saved to a file
-curl -sOJ 'http://apogeerpivhf.local:8080/api/export?from=2026-10-04&amp;to=2026-10-05&amp;download=1'
+curl -sOJ 'http://radiolog.local:8080/api/export?from=2026-10-04&amp;to=2026-10-05&amp;download=1'
 
 # what channels exist, with first and last sighting
-curl -s http://apogeerpivhf.local:8080/api/export/channels | jq</code></pre>
+curl -s http://radiolog.local:8080/api/export/channels | jq</code></pre>
 
 <p>The envelope reports what was asked and what was done:</p>
 
@@ -1736,9 +2513,8 @@ asks for a safety brief: what happened, what is still active, what is within
 settings panel. One button, one call, a few minutes.</p>
 
 <p>It is a summary of transcripts, not a source of truth. Everything in it
-descends from Whisper output that <a href="#modelbench">4.7.2</a> shows is
-wrong often enough to matter, so each incident links back to the recording it
-came from. <strong>Listen to the clip before acting on anything.</strong></p>
+descends from machine transcripts that are wrong often enough to matter, so
+each incident links back to the recording it came from. <strong>Listen to the clip before acting on anything.</strong></p>
 
 <h4>What it sends</h4>
 <p>The prompt lives in <code>brief_prompt.txt</code> beside
@@ -1747,8 +2523,13 @@ patch. The data is whatever <code>export_query</code> returns from
 <a href="#export">/api/export</a>, by default:</p>
 <pre><code>channel=16,22a&amp;hours=24&amp;text=1&amp;min_quality=55&amp;min_duration=3</code></pre>
 
-<p>Two substitutions happen before the prompt goes out.</p>
+<p>Three substitutions happen before the prompt goes out.</p>
 <ul>
+  <li><code>&lt;&lt;Vessel Name&gt;&gt;</code> becomes the configured
+      <code>vessel_name</code>, so the model can recognise traffic addressed
+      to us. Left blank it becomes a sentence saying plainly that no name is
+      configured and the rule should be skipped, rather than an empty string
+      that would match nothing in a confusing way.</li>
   <li><code>&lt;&lt;Current Position&gt;&gt;</code> becomes the receiver's
       position <em>and how it was obtained</em> &mdash; a live Signal K fix
       with its age, or the configured position with a warning that it is not a
@@ -1763,14 +2544,122 @@ patch. The data is whatever <code>export_query</code> returns from
       message whose WAV has aged out gets no field and therefore no link.</li>
 </ul>
 
+<h4>What the brief is shaped like</h4>
+
+<p>Settled over five rounds of a model bakeoff on 3&ndash;4 November, run
+against 293 real transmissions through eight models. The prompt is
+<code>brief_prompt.txt</code>; this is what it asks for and why.</p>
+
+<p><strong>It opens with the conclusion.</strong> The first section is
+<em>Before you get underway</em>: at most six bullets, most
+decision-changing first, each one a thing to <em>do, avoid, watch</em> or
+<em>ignore</em> rather than a thing that happened. Everything below it is
+the evidence. The captain is deciding whether to sail, not reading a log,
+and a brief that makes him work through twelve tables to find that out has
+answered the wrong question.</p>
+
+<p>One bullet type is easy to miss the point of: <strong>what can safely be
+ignored</strong>. An incident that appears in a table but is never assessed
+reads as an unassessed risk, so saying "the vessel 100&nbsp;nm upcoast is
+resolved, ignore it" removes work rather than adding it. Unknowns are a
+bullet too &mdash; "nothing was broadcast about conditions south of the
+point" is more useful than silence, because silence reads as all clear.</p>
+
+<div class="warn-box">
+  <b>Three kinds of sentence, and the reader can tell which</b>
+  <p><strong>Heard</strong> came over the air and is written as plain prose.
+  It is the only kind that carries the station's authority.</p>
+  <p><strong>Background</strong> is the model's own knowledge and opens with
+  <code>Background:</code> &mdash; what a place is, who runs it, what a
+  procedure normally signifies, what kind of operation a cordon of that size
+  usually accompanies. This is wanted, and it is where most of the brief's
+  value over a bare list comes from. Hedging words are required when the
+  model is unsure.</p>
+  <p><strong>Not known</strong> says so and stops. "The reason was not
+  broadcast" is a complete sentence.</p>
+  <p>Never two kinds in one sentence. A brief that states background without
+  the label is defective even when every word is true, because the reader
+  cannot tell which sentences the radio supports. In practice the discipline
+  is uneven &mdash; models used the label between zero and six times per
+  brief &mdash; so an unlabelled claim that reads like outside knowledge
+  should be treated as one.</p>
+</div>
+
+<p><strong>External links are searches, not pages.</strong> The brief runs
+with no web search tool, so it cannot know whether a URL exists. The prompt
+used to demand "a live link to the page retrieved via your web search" while
+providing no way to search, and the models resolved that contradiction by
+inventing addresses &mdash; one emitted a domain with a space in it, and
+three produced different guesses at the same event page. They also copied
+two example URLs out of the instructions into briefs as though they were
+research. What they emit now is a <code>google.com/search</code> query built
+from the corrected name, which always resolves and invents nothing. Across
+five models the count of asserted page URLs went from many, several dead, to
+zero.</p>
+
+<p>That is honest, and it is not intelligence. Giving the models a real
+search tool is the only way to reach the actual event page, and it has not
+been measured.</p>
+
+<p><strong><em>Odd and notable</em></strong> is a section of its own, placed
+after the incident sections and deliberately exempt from the
+does-it-change-the-plan test. An argument between two vessels about a close
+quarters pass changes nothing and is the most worthwhile thing in two days
+of traffic. When that test was first introduced it dropped the item to three
+models out of eight; exempting it put it back to eight.</p>
+
+<p><strong>Three clip links per row.</strong> <em>First Heard</em> and
+<em>Last Heard</em> carry the clip of that particular transmission, and
+<em>Clip</em> carries the one worth hearing. The old rule said to link the
+latest transmission of an incident, which is right for a bulletin
+rebroadcast on a cycle and wrong for anything that developed: it linked
+"thanks for the help" instead of "mayday, taking on water". Measured, the
+linked clip sat 64% of the way through the window. First Heard now lands at
+20&ndash;45%.</p>
+
+<div class="note">
+  <b>The Clip column still tends to follow Last Heard</b>
+  <p>The instruction to link the establishing transmission does not reliably
+  land &mdash; models appear to treat most-recent as most-relevant whatever
+  the prompt says. <strong>First Heard is the dependable route to the opening
+  call.</strong> Having three links rather than one better link is what makes
+  that tolerable, and is the reason the redundancy is there.</p>
+</div>
+
+<p><strong>Nothing in the prompt names a real event, place, club or URL.</strong>
+An example naming something that appears in the traffic is an answer key and
+a priority signal at once: the model does well on the named thing and poorly
+on everything else, and a measurement built on it is measuring recall of the
+prompt. The worked examples are deliberately from a coast this receiver
+cannot hear.</p>
+
 <h4>What comes back</h4>
-<p>One non-streaming POST to an OpenAI-compatible chat endpoint; the reply is
+<p>One non-streaming POST to whichever endpoint <code>[ai]</code> names.
+Two shapes are implemented: Gemini's <code>generateContent</code>, which is
+what runs here, and <code>/v1/chat/completions</code> for xAI, OpenAI and
+anything else speaking that dialect. <code>provider</code> selects one, or
+<code>auto</code> reads it off the endpoint host. The reply is
 an HTML fragment, optionally followed by a KML document between
 <code>&lt;&lt;&lt;KML&gt;&gt;&gt;</code> markers. The server splits the two,
 saves them together, and serves the KML at
 <code>/brief/&lt;id&gt;/vhf-alert-locations.kml</code> &mdash; then rewrites
 whatever link the model wrote to point there, so the download works whatever
 filename it guessed.</p>
+
+<p>The KML is parsed on the way in. A document that fails is repaired where
+the fault is mechanical and nothing else: a colon at the end of a tag name,
+which is how <code>&lt;scale:&gt;1.0&lt;/scale&gt;</code> arrived from one
+model &mdash; lexically a valid XML name, and an invalid one once the local
+part after the colon turns out to be empty. A real namespace prefix such as
+<code>&lt;gx:Track&gt;</code> cannot match, and a colon in element text or an
+attribute is untouched. The document is re-parsed afterwards and the repair
+kept only if it worked.</p>
+
+<p>Anything that still will not parse is saved anyway and the journal says
+so. A chart the reader cannot open is worth repairing; a chart quietly
+rewritten into something that parses but says something else is not, which
+is why the repair removes only characters that cannot legally be where they
+are and never moves or invents content.</p>
 
 <p><strong>The HTML is stripped before any browser sees it.</strong> Scripts,
 iframes, embedded objects, inline <code>on*</code> handlers and
@@ -1793,6 +2682,63 @@ rather than restarting the clock.</p>
 <p>Briefs are kept under <code>&lt;base_dir&gt;/briefs/</code>, newest first in
 the dropdown, oldest pruned when the count passes <code>keep_briefs</code>
 &mdash; the same oldest-first rule the message stack uses.</p>
+
+<h4 id="briefexport">Exporting one brief</h4>
+
+<p><strong>Export brief</strong>, beside <em>Download KML</em>, downloads
+<code>brief-&lt;id&gt;.zip</code> for whichever brief is on screen. It is the
+whole of that run, not just its conclusion:</p>
+
+<table>
+  <tr><th>File</th><th>What it is</th></tr>
+  <tr><td><code>brief.html</code></td>
+      <td>The report as a page that opens on its own, styled for light and
+          dark. The brief page's own furniture &mdash; filters, history
+          dropdown, run button &mdash; is left out; none of it means anything
+          in a file.</td></tr>
+  <tr><td><code>prompt.txt</code></td>
+      <td>Exactly what was sent to the model, including the radio traffic
+          appended to it.</td></tr>
+  <tr><td><code>traffic.json</code></td>
+      <td>That same traffic on its own, pretty-printed.</td></tr>
+  <tr><td><code>summary.json</code></td>
+      <td>Model, filters, query, token usage, timings, counts.</td></tr>
+  <tr><td><code>README.txt</code></td><td>What each file is.</td></tr>
+  <tr><td><code>vhf-alert-locations.kml</code></td>
+      <td>When the brief produced one, with the same entity repair the
+          download link applies.</td></tr>
+</table>
+
+<p><code>traffic.json</code> is not a second copy of the data. The prompt ends
+with the traffic, so the record keeps a byte offset and the two files are cut
+from one string &mdash; an offset rather than a search for the opening
+bracket, because the header above the data carries a JSON dump of the filters
+and <code>ignored_channel_terms</code> puts a bracket in it.</p>
+
+<div class="warn-box">
+  <b>Briefs written before 2 November carry no prompt</b>
+  <p>Until then the record kept the report, the KML and the filters, and
+  nothing of what was actually sent. Those briefs still export &mdash; report,
+  KML and summary &mdash; and the zip's <code>README.txt</code> names the two
+  files that are missing and why, rather than the button quietly producing a
+  thinner zip.</p>
+  <p>They cannot be backfilled. <code>export_query</code> is relative, so
+  re-running it now returns different traffic and would build a different
+  prompt; a reconstruction would be a plausible document that was never sent
+  to anything. The choice was to record it from this point or not at all.</p>
+</div>
+
+<p>The prompt is most of a brief file, so briefs have grown from tens of kB to
+a few hundred &mdash; roughly 10&nbsp;MB in <code>briefs/</code> at the
+default <code>keep_briefs</code> of 30, against about 1&nbsp;MB before. That
+is the number to watch if the card gets tight.</p>
+
+<p><code>/api/brief/&lt;id&gt;</code> deliberately does <em>not</em> return
+the prompt. The page has no use for it, and sending it would put a few hundred
+kB on the wire every time a brief is opened or picked out of the history
+dropdown. The endpoint reports <code>has_prompt</code> beside the
+<code>has_kml</code> it already reported, and the zip is where the prompt
+itself comes from.</p>
 
 <h4><code>[ai]</code> in the config file</h4>
 <p>Every key is optional. This block is read by <code>webui.py</code> alone,
@@ -1824,9 +2770,13 @@ restart.</p>
   <tr><td><code>brief_dir</code></td><td>blank</td>
       <td>Blank means <code>&lt;base_dir&gt;/briefs</code>.</td></tr>
   <tr><td><code>base_url</code></td><td>blank</td>
-      <td>Blank means whatever host the browser used, so clip links come back
-          over Tailscale when you asked over Tailscale. Set it if briefs are
-          read somewhere other than where they are run.</td></tr>
+      <td>Blank means clip links are written root-relative, so a brief works
+          over the funnel, the tailnet and the LAN alike. It used to mean the
+          host that asked for the run, which baked that host into every link
+          &mdash; a brief generated over the tailnet then sent its reader to a
+          tailnet address whatever path they had opened it by. Set it only to
+          an absolute URL if briefs are read somewhere that cannot resolve a
+          relative one.</td></tr>
 </table>
 
 <p>The API key is read from its file on each run and never logged, never
@@ -1842,7 +2792,7 @@ at all, which is the usual one after a quiet night with
 <code>min_quality=55</code> in force.</p>
 
 <!-- ========================================================= -->
-<h2 id="admin">10. Routine administration</h2>
+<h2 id="admin">11. Routine administration</h2>
 
 <h3>Health checks</h3>
 <pre><code>vcgencmd measure_temp                     # SoC temperature
@@ -1926,6 +2876,80 @@ for r in c.execute('''select channel, count(*),
 
 <p>Run that after a day. A channel at 0% useful is carrying digital traffic or
 interference and is costing a receiver slot and 10% of a core.</p>
+
+<p>The <code>corrections</code> table is the one thing in the database that
+cannot be rebuilt from the recordings, so it is worth taking away on its
+own:</p>
+
+<pre><code>sqlite3 ~/watchkeeper/watchkeeper.db \
+  ".mode insert corrections" ".once ~/corrections.sql" \
+  "SELECT * FROM corrections;"</code></pre>
+
+<h3 id="recycle">The nightly recycle</h3>
+
+<p>The ONNX Runtime CPU arena does not give memory back, so the web and
+watchkeeper services grow over a run &mdash; slowly, and without a leak in the
+usual sense. <code>/usr/local/bin/nightly_recycle.py</code> restarts the
+watchkeeper once overnight, and only when it is genuinely idle:</p>
+
+<pre><code>*/10 0-5 * * * root WATCHKEEPER_USER=pi /home/pi/venv_wx/bin/python /usr/local/bin/nightly_recycle.py</code></pre>
+
+<p>It checks every ten minutes between midnight and 06:00 and acts on the
+first pass that finds a long enough quiet window with no message and no
+transcription in flight, then does nothing more until the next night. A quiet
+window is a requirement rather than a preference: a restart mid-decode loses
+the clip being transcribed, and on this coastline 02:00 is quiet but not
+reliably so.</p>
+
+<p><strong>How long is "long enough" depends on how bad things are.</strong>
+Normally twenty minutes. When the machine is actually in trouble &mdash; RSS
+past <code>--urgent-mb</code>, or less than <code>--min-available-mb</code>
+free, or more than <code>--max-swap-mb</code> of swap in use &mdash; five
+minutes is accepted instead. At that point a restart during a short lull
+costs at worst one clip, and swapping on a microSD card costs more than that
+and goes on costing it.</p>
+
+<div class="warn-box">
+  <b>Why the single threshold was wrong</b>
+  <p>On 4 November the watchkeeper had run seven days without a recycle, at
+  5.3&nbsp;GB RSS, with the system at 82% memory and 1.1&nbsp;GB of swap in
+  use. The RSS guard had passed long before. What blocked it was the
+  twenty-minute requirement, and the night's three longest quiet gaps were
+  19.1, 19.0 and 18.7 minutes. <strong>It missed by 54 seconds, three
+  times.</strong></p>
+  <p>That is not bad luck. The receiver now watches six channels at about
+  850 messages a day, 181 of them between midnight and six, and a
+  twenty-minute hole has simply stopped occurring. The threshold was set for
+  a quieter installation than this one became, which is the failure mode any
+  fixed threshold has eventually.</p>
+</div>
+
+<p>The other three guards are unchanged and the shorter window is not a
+bypass for them: nothing below <code>--threshold-mb</code>, never with a
+transcription pending, once a night. If the box is swapping but the
+watchkeeper is not the cause, restarting it fixes nothing and it stays
+put.</p>
+
+<p>It reports what it did to the journal under the tag
+<code>nightly-recycle</code>:</p>
+
+<pre><code>journalctl -t nightly-recycle --since yesterday</code></pre>
+
+<p>Every decision carries the memory behind it, so a diagnosis needs the
+journal and nothing else:</p>
+
+<pre><code>skipping restart: last transmission 99 s ago, need 300 s quiet
+  (shortened: RSS 5466 MB, only 1293 MB available, 1111 MB of swap in use)
+  [RSS 5466 MB, 1293 MB available, 1111 MB swap]</code></pre>
+
+<p>A night that skips on every pass is normal and not a fault &mdash; it
+means the receiver was busy until dawn, or there was nothing to reclaim. The
+first unattended run reclaimed 4.57&nbsp;GB.</p>
+
+<p>The post-restart figure is sampled at 45&nbsp;seconds. It used to be 20,
+which was before the decoder finishes loading at about 31 &mdash; so every
+"after" reading in the journal before 4 November was taken before the memory
+it was meant to measure had been allocated, and flattered the result.</p>
 
 <h3>Archiving audio before it evaporates</h3>
 <pre><code>~/venv_wx/bin/python make_truth.py --corpus ~/wx_corpus --archive --limit 200</code></pre>
@@ -2048,7 +3072,7 @@ internet:</p>
 <p>The web interface then follows at the same name on port 8080.</p>
 
 <!-- ========================================================= -->
-<h2 id="trouble">11. Troubleshooting</h2>
+<h2 id="trouble">12. Troubleshooting</h2>
 
 <h3>Nothing is being received</h3>
 <ol>
@@ -2153,6 +3177,40 @@ title goes dim when a poll has failed. Over a tailnet or marina wifi,
 the page keeps the last good snapshot until a poll succeeds. Reload if the
 indicator does not clear.</p>
 
+<h3 id="fullmount">The audio mount is full</h3>
+<p>This does not announce itself as a disk error. What you see is the
+receiver apparently falling over at random:</p>
+<pre><code>ERROR   session crashed
+Traceback (most recent call last):
+  ...
+  File "watchkeeper.py", line ..., in _emit
+    sf.write(path, msg.audio, AUDIO_RATE, subtype="PCM_16")
+soundfile.LibsndfileError: Error opening '...wav': System error.
+WARNING restarting capture in 60s</code></pre>
+
+<p>Each one costs a reopened dongle, a squelch recalibration and a backoff
+that doubles to a 60&nbsp;second ceiling, so the log grows gaps rather than
+stopping. On 7&nbsp;October this happened 49 times in five hours before anyone
+noticed, because nothing in the message mentions storage.</p>
+
+<pre><code>df -h ~/watchkeeper/audio
+journalctl -u watchkeeper@$USER --since "24 hours ago" | grep -c "session crashed"</code></pre>
+
+<p>The immediate fix resizes the mount in place, with no restart and nothing
+lost:</p>
+<pre><code>sudo mount -o remount,size=1G ~/watchkeeper/audio</code></pre>
+<p>Then make it survive a reboot by editing the <code>size=</code> field of the
+tmpfs line in <code>/etc/fstab</code> &mdash; keeping <code>nofail</code>,
+without which a failed mount stops a headless Pi reaching a login prompt. Size
+it with the rule in <a href="#history">5.13</a> rather than by eye.</p>
+
+<p>Two guards were added on 7&nbsp;October so it cannot be silent again. A
+failed write now costs that one recording and logs <em>recording lost, still
+receiving</em> instead of restarting the session, and the prune tick warns once
+the mount passes 90% full. A clause narrowed to <code>OSError</code> would
+catch neither: soundfile raises <code>LibsndfileError</code>, which derives
+from <code>RuntimeError</code>.</p>
+
 <h3>After a reboot</h3>
 <p><code>removed N row(s) whose audio is gone</code> is expected — recordings
 are in RAM. If <code>findmnt -n -o FSTYPE ~/watchkeeper/audio</code> does not
@@ -2173,18 +3231,30 @@ security update to the Qt6 stack is the suspected cause.</p>
 peaks and open counts; <code>rtl_power</code> gives a spectrum survey.</p>
 
 <!-- ========================================================= -->
-<h2 id="limits">12. Known limits</h2>
+<h2 id="limits">13. Known limits</h2>
+
+<h3>The receiver is deaf while the vessel transmits</h3>
+<p>The masthead antenna is shared with the boat&rsquo;s own VHF through the
+<a href="#trswitch">MFJ-1708B-SDR T/R switch</a>, which hands the antenna to
+the transceiver whenever it keys up. For the length of every transmission from
+this vessel, plus the receive delay set on the switch, this receiver hears
+nothing &mdash; on <em>all</em> channels, not only the one in use.</p>
+
+<p>Nothing in the log marks the gap, and nothing can: the receiver has no way
+to know the difference between a quiet band and an antenna that is somewhere
+else. A long exchange on 16 therefore reads afterwards as a quiet few minutes
+across the whole watch. Own transmissions never appear at all. When a stretch
+of the log looks improbably empty, check whether anyone aboard was on the
+radio.</p>
 
 <h3>Transcription accuracy</h3>
-<p>Sixteen configurations were benchmarked on 4&nbsp;October against two
-hand-transcribed clips &mdash; one strong, one marginal. The table is in
-<a href="#modelbench">4.7.2</a>; it supersedes the seven-model summary that
-used to sit here and the recommendation of <code>small.en</code> that went
-with it. <code>medium.en</code> has been in use since the cooler swap gave it
-the thermal headroom.</p>
+<p>Word accuracy on dense numeric bulletins defeats both engines. Station
+names, telephone numbers and long coordinate readbacks come back as
+<em>contact your daughter</em>, <em>Rain Surveillance Center</em>,
+<em>Motives and Mariners</em>. Keyword biasing would help and is not reachable
+through this runtime &mdash; see <a href="#prowords">5.8</a>.</p>
 
-<p>What survives from the older reading is the shape of the problem rather
-than the ranking. Signal quality is still the binding constraint, and no
+<p>Signal quality remains the binding constraint. No
 model recovers a transmission the receiver did not capture cleanly; none of
 the sixteen read S&eacute;curit&eacute; or PAN&nbsp;PAN correctly, and every
 distilled variant mangles positions. The difference the benchmark did show is
@@ -2196,9 +3266,8 @@ a rounding error on good traffic.</p>
 <h3>The AI brief</h3>
 <p>Two layers of guessing sit on top of each other, and the second cannot
 repair the first. Whisper decides what was said; the model then decides what
-it meant. <a href="#modelbench">4.7.2</a> measured the first layer at a word
-error rate that makes a position, a vessel name or a channel number a coin
-toss on marginal traffic, and no amount of reasoning recovers a word the
+it meant. On marginal traffic the first layer makes a position, a vessel name or a
+channel number a coin toss, and no amount of reasoning recovers a word the
 decoder never heard. The model is told to flag ambiguity rather than invent a
 fix, which helps and does not cure.</p>
 
@@ -2213,22 +3282,10 @@ once. It does not update, it does not know what arrived after it ran, and a
 cancellation broadcast five minutes later will not appear in it. The log is
 live; the brief is not.</p>
 
-<h3>The AI HAT+ 2</h3>
-<p>Bought, fitted, benchmarked, and since removed from this receiver. Recorded
-here because the result is the useful part.</p>
-<p>Not used for speech. <code>base</code> is the largest variant
-the Hailo apps offer, and both <code>tiny</code> variants return punctuation
-soup because their decoder architecture is mishandled. The NPU runs about 28&nbsp;°C
-cooler and leaves the CPU free, but it cannot match <code>small.en</code>.</p>
-<p>Its remaining value is classification — triaging recent messages by
-importance, extracting vessel names and channel numbers. That is genuinely
-beyond the Pi's cores and cannot fabricate a transcript, which makes it the safe
-use. It is not built.</p>
-
 <h3>Things that sound like good ideas and are not</h3>
 <ul>
   <li><strong>Priming the decoder with marine vocabulary.</strong> Makes
-      hallucinations fluent and plausible instead of obviously wrong. See §4.9.</li>
+      hallucinations fluent and plausible instead of obviously wrong. See §5.9.</li>
   <li><strong>Lowering <code>compression_ratio_threshold</code>.</strong> On
       short transmissions this rejects real Coast Guard broadcasts while
       passing "Gun, gun, gun" — the metric assumes long-form text where a loop
@@ -2238,13 +3295,31 @@ use. It is not built.</p>
       anti-correlated with quality on this traffic: the highest value on record
       belongs to a correctly decoded Coast Guard securit&eacute; broadcast.</li>
   <li><strong>Using SNR to filter weak messages.</strong> On FM the figure ran
-      backwards. See §4.11.</li>
+      backwards. See §5.11.</li>
   <li><strong>An LLM pass to clean up transcripts.</strong> It would turn
       unintelligible noise into fluent, plausible, invented marine phraseology,
       and the result would be more convincing than the original. Anything an
       LLM produces should sit beside the transcript, attributed, never replace
       it.</li>
 </ul>
+
+<h3 id="noauth">Nothing in the web interface is authenticated</h3>
+
+<p>This was true before anything wrote to the database &mdash;
+<code>/api/brief/run</code> spends money and minutes and is reachable by
+anyone who can reach the page &mdash; and <a href="#correcting">Correct
+text</a> does not change the posture so much as raise the stakes. Both are
+POST-only, so nothing that follows links speculatively can trigger them, and
+every correction is written to the journal with the client address and the
+text it replaced:</p>
+
+<pre><code>journalctl -u watchkeeper-web@pi | grep corrected</code></pre>
+
+<p>That log is the only record of who changed what. The interface is reached
+over the tailnet, where that is a reasonable trade; if it is ever published
+through a funnel or forwarded from a router, then anyone holding the URL can
+rewrite transcripts, and the original readings in the
+<code>corrections</code> table are what would let you tell.</p>
 
 <h3>Two dongles</h3>
 <p>Channels more than about 800&nbsp;kHz apart cannot share a capture. Watching
@@ -2253,7 +3328,7 @@ receiver.</p>
 
 <footer>
   <p>Radio Log &middot; operator and maintenance guide &middot;
-     revised 20 September 2026.</p>
+     revised 4 November 2026.</p>
   <p><a class="toplink" href="/">&larr; back to the log</a></p>
 </footer>
 
