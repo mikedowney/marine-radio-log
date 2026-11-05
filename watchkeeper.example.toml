@@ -263,6 +263,16 @@ always_transcribe      = ["Ch16 Distress", "Ch22A USCG Info"]
 # primary is exactly the case the second pass exists for.
 always_min_quality     = 0
 
+# Readability floor for sending a clip to the second pass at all. 0 means
+# always consider it; the decision is then made by the rules in asr_engines.py
+# rather than by a number here.
+second_pass_min_quality = 0
+
+# Whether a clip the primary heard nothing in is re-decoded by the second
+# pass. false: silence from a transducer is usually real silence, and asking
+# faster-whisper to look at noise is how invented passages get in.
+second_pass_on_empty   = false
+
 # Readability at or above which a transcript is never discarded outright, only
 # trimmed -- the guard that stops the repetition filter throwing away a station
 # that identified itself three times. MUST stay above min_transcribe_quality

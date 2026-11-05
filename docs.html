@@ -386,9 +386,6 @@ service.</p>
           between the vessel's VHF transceiver and the SDR, and protects the
           dongle when the transceiver keys up. <b>Not optional on a shared
           antenna</b> &mdash; see <a href="#trswitch">below</a>.</td></tr>
-  <tr><td>AI HAT+ 2</td><td>Hailo-10H NPU &mdash; evaluated, then removed</td>
-      <td>Benchmarked and rejected for speech, then taken out: it blocks the
-          cooler's airflow. See <a href="#limits">known limits</a>.</td></tr>
 </table>
 
 <h3 id="coolerswap">What the cooler was worth, measured</h3>
@@ -537,7 +534,7 @@ usually means something is transmitting on a reference frequency. And if their
 absolute power drops sharply, the log raises an antenna alarm, because a 25&nbsp;dB
 drop in received noise almost always means a connector has come loose.</p>
 
-<h3>5.4 Squelch</h3>
+<h3 id="squelch">5.4 Squelch</h3>
 
 <p>Detecting a transmission on FM is less obvious than it looks. An FM receiver's output is the same loudness
 whether it is receiving speech or pure noise — that is what the modulation
@@ -668,24 +665,66 @@ set applies its selectivity at a fixed 455&nbsp;kHz IF, where 70&nbsp;dB of
 adjacent-channel rejection is a cheap ceramic filter rather than an
 impossibility.</p>
 
-<h3 id="gate">5.6.2 The pre-transcription gate</h3>
+<div class="note">
+  <b>15.7 dB is a property of this berth, not of the receiver</b>
+  <p>The aggressor above is the Los Angeles harbour operations transmitter,
+  which is both powerful and close to the slip &mdash; the worst case for the
+  R828D, since third-order products rise three dB for every dB of input. A
+  receiver somewhere else is not fighting it.</p>
+  <p>That matters because the measurements in this section also showed the
+  noise floor flat across 14.4, 15.7 and 16.6&nbsp;dB, which means this
+  receiver is ADC-limited here rather than noise-limited. Once the strong
+  in-band aggressor is gone &mdash; at anchor, offshore, or in a quieter
+  harbour &mdash; every dB held back is sensitivity surrendered for no
+  reduction in noise, and the gain should go <em>up</em>. Re-survey it after
+  any change of home berth; do not copy 15.7 from this document.</p>
+</div>
 
-<p>The encoder always processes one padded 30-second window, so a one-second
-clip costs nearly as much to decode as a twenty-five-second one. On a Pi 5
-under a HAT that is CPU and heat spent on nothing, and skipping the hopeless
-clips is worth doing.</p>
+<h3 id="gate">5.6.2 The pre-transcription gate, and why it is now open</h3>
 
-<p>Two gates, both off at 0, both checked before the job is ever queued:</p>
+<div class="warn-box">
+  <b>This section describes a decision that has been reversed</b>
+  <p>The gates below are all <code>0</code> on the boat, which means none of
+  them fire. The section is kept because the keys still exist, the reasoning
+  explains why they were ever set, and anyone running faster-whisper alone
+  will want them back.</p>
+</div>
+
+<p>The original case for gating was <strong>faster-whisper's</strong>
+economics, not the receiver's. faster-whisper pads every clip to a fixed
+thirty-second encoder window, so a one-second clip cost nearly as much to
+decode as a twenty-five-second one, and on a thermally constrained Pi
+throwing away the hopeless clips bought real headroom.</p>
+
+<p>Parakeet has no such floor. Its cost tracks the audio it is actually given,
+at roughly 0.13 &times; duration, so a hopeless one-second clip now costs about
+a tenth of a second of CPU. At that price the gates cost more than they save:
+everything they reject is a message that could have been read, and
+<a href="#transcribe">5.7</a> is the measurement that made keeping them
+indefensible. They were opened when the transducer became the primary.</p>
+
+<p>Three gates, all off at 0, all checked before the job is ever queued. The
+values shown are what is set on the boat:</p>
 
 <table>
   <tr><th>Key</th><th>Meaning</th></tr>
   <tr><td><code>min_transcribe_quality</code></td>
-      <td>Readability below which the decode is skipped. 55 on the boat.</td></tr>
+      <td>Readability below which the decode is skipped. <strong>0</strong> on
+      the boat &mdash; was 55 until the transducer arrived.</td></tr>
   <tr><td><code>min_transcribe_s</code></td>
-      <td>Clips shorter than this are mic pops. 2.0 s on the boat.</td></tr>
+      <td>Clips shorter than this are treated as mic pops.
+      <strong>0</strong> on the boat &mdash; was 2.0&nbsp;s. A brief
+      acknowledgement on Ch09 or Ch12 is worth having, and a pop now costs
+      about 0.13&nbsp;s and returns nothing.</td></tr>
   <tr><td><code>always_transcribe</code></td>
-      <td>Channel names exempt from both. <code>["Ch16 Distress", "Ch22A USCG Info"]</code>
-      on the boat.</td></tr>
+      <td>Channel names exempt from the ordinary floors.
+      <code>["Ch16 Distress", "Ch22A USCG Info"]</code> on the boat. With every
+      gate at 0 this list no longer distinguishes anything; it is kept as a
+      statement of intent.</td></tr>
+  <tr><td><code>always_min_quality</code></td>
+      <td>The floor that still applies to those priority channels, so a 42%
+      clip on Ch16 does not cost a full decode and come back as boilerplate.
+      <strong>0</strong> on the boat.</td></tr>
   <tr><td><code>keep_above_quality</code></td>
       <td>Readability at or above which a transcript is never discarded outright,
       only trimmed. 60 on the boat. Must exceed <code>min_transcribe_quality</code>.</td></tr>
@@ -837,7 +876,7 @@ minutes of decoding &mdash; roughly half of one core.</p>
   instead; see <a href="#prowords">5.8</a>.</p>
 </div>
 
-<h3 id="encmem">5.7.1 Encoder memory grows with the square of clip length</h3>
+<h3 id="encmem">5.7.1 Parakeet: encoder memory grows with the square of clip length</h3>
 
 <p>The Conformer encoder's attention is quadratic in input length. This is not
 a gentle curve. Feeding a 373-second recording in one piece raised resident
@@ -873,7 +912,12 @@ and cuts there, so a chunk boundary falls in a pause rather than mid-word.</p>
   without a change to the kernel command line and a reboot.</p>
 </div>
 
-<h3 id="tokencap">5.7.2 The token cap is sized to the window, not the clip</h3>
+<h3 id="tokencap">5.7.2 faster-whisper: the token cap is sized to the window, not the clip</h3>
+
+<p>Everything in this subsection concerns <strong>faster-whisper only</strong>,
+which since 23&nbsp;October is the second pass and sees roughly a fifth of
+traffic. Parakeet has no token cap and no context limit of this kind; none of
+it applies to the primary decoder.</p>
 
 <p>This is subtle enough to have shipped as a bug, so it is worth stating
 plainly: <code>max_new_tokens</code> is applied by faster-whisper
@@ -1037,7 +1081,7 @@ clip.</p>
   inserting the decimal, not by decoding twice.</p>
 </div>
 
-<h3 id="edges">5.7.4 Edge treatment: trimming the squelch burst</h3>
+<h3 id="edges">5.7.4 Parakeet: edge treatment, and trimming the squelch burst</h3>
 
 <p>Parakeet silently discards the opening of a transmission. Not garbled
 &mdash; absent, with confidence still reported as <code>ok</code> and no error
@@ -1165,6 +1209,12 @@ decodes at every setting from 100&nbsp;ms up and comes back empty at 0.</p>
 </div>
 
 <h3 id="prowords">5.8 Prowords, and why there is no phrase filter</h3>
+
+<p>The normalisers below run on the finished transcript, whichever engine
+produced it. The <em>phrase</em> filters they replaced existed only to clean up
+after faster-whisper's invented passages, which is why removing them became
+possible once a transducer took over the bulk of the work &mdash; see
+<a href="#transcribe">5.7</a>.</p>
 
 <p>This program used to carry a substantial filter chain: a blocklist of
 phrases Whisper is known to invent, a subtitle-credit corpus, a repetition
@@ -1330,7 +1380,7 @@ not correct a <em>wrong</em> frequency: one of the eight clips in
 157.1 was meant, and the log carries 157.8, because what was said is what is
 recorded.</p>
 
-<h3>5.9 Why there is no decoder prompt</h3>
+<h3>5.9 faster-whisper: why there is no decoder prompt</h3>
 
 <p>Whisper accepts an <code>initial_prompt</code> that conditions it on
 vocabulary. The marine presets deliberately supply none.</p>
@@ -1567,7 +1617,7 @@ hemisphere is placed in whichever one is nearer home &mdash; and still has to
 pass the distance check. Those are marked <em>hemisphere assumed</em> in the
 export and in the pin's tooltip.</p>
 
-<h3>5.13 Retention</h3>
+<h3 id="retention">5.13 Retention</h3>
 
 <p>The database keeps the most recent <code>max_messages</code> rows — 100 by
 default, 2000 on the boat since 4 October — and deletes the oldest by message id. Nothing else is considered:
@@ -1811,7 +1861,6 @@ alongside the programs so they travel with the rest of the software.</p>
   <tr><td><code>test_dsp.py</code></td><td>DSP test suite. Run after any change to the signal path.</td></tr>
   <tr><td><code>make_truth.py</code></td><td>Archive recordings off the tmpfs mount onto the card, and transcribe by ear for comparison.</td></tr>
   <tr><td><code>bench_models.py</code></td><td>Compare speech models against that corpus.</td></tr>
-  <tr><td><code>bench_hailo.py</code></td><td>The same, on the NPU.</td></tr>
   <tr><td><code>run_bench.py</code></td><td>Runs the whole benchmark suite unattended.</td></tr>
   <tr><td><code>analyse_bench.py</code></td><td>Re-cuts saved benchmark results without re-running.</td></tr>
 </table>
@@ -1890,6 +1939,12 @@ later &mdash; with one exception noted under <code>[web]</code> below.</p>
 <h3><code>[radio]</code> — global defaults</h3>
 <table>
   <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>station_name</code></td>
+      <td>Title of the web page and of exported transcripts.</td></tr>
+  <tr><td><code>sample_rate</code>, <code>device_index</code></td>
+      <td>Tuner sample rate in samples per second (2048000, giving the
+      2.048&nbsp;MHz window), and which dongle to open when more than one is
+      present.</td></tr>
   <tr><td><code>gain</code></td><td>Tuner gain in dB. <code>"0"</code> selects the tuner's own AGC.
       On the boat this is 15.7 &mdash; see <a href="#intermod">5.6.1</a> for why it is so low.</td></tr>
   <tr><td><code>target_rms</code></td>
@@ -1918,14 +1973,45 @@ later &mdash; with one exception noted under <code>[web]</code> below.</p>
       <td>Silence added to each end after trimming. Both 0 in service: padding
       was measured and withdrawn. See <a href="#edges">5.7.4</a>.</td></tr>
   <tr><td><code>primary_chunk_s</code></td>
-      <td>Chunk length fed to the encoder. Caps memory &mdash; see <a href="#encmem">5.7.1</a>.</td></tr>
+      <td>Chunk length fed to the encoder. Caps memory &mdash; see <a href="#encmem">5.7.1</a>.
+      120 on the boat.</td></tr>
+  <tr><td><code>retry_min_s</code>, <code>retry_min_cps</code>,
+          <code>retry_gain</code></td>
+      <td>Re-decode an implausibly sparse primary result against the raw,
+      untreated audio. A clip at least <code>retry_min_s</code> long whose
+      transcript comes back under <code>retry_min_cps</code> characters per
+      second is tried again with its amplitude multiplied by
+      <code>retry_gain</code>. Good decodes run 10&ndash;17 characters per
+      second; the failures this catches sat at 3.2. 12.0, 6.0 and 1.5 on the
+      boat; <code>retry_min_cps = 0</code> disables it.</td></tr>
+  <tr><td><code>model</code></td>
+      <td>The faster-whisper model used for the second pass.
+      <code>medium.en</code> on the boat. The bare name is historical: this was
+      the only engine before 23&nbsp;October, and it still reads as though it
+      were the main one.</td></tr>
   <tr><td><code>second_model</code>, <code>second_idle_release_s</code></td>
-      <td>The coordinate second pass and how long it stays resident.</td></tr>
+      <td>An explicit override for the second-pass engine, and how long it
+      stays resident once loaded. <code>second_model</code> is empty by
+      default, which means fall back to <code>model</code> above; unset on the
+      boat. Release defaults to 900&nbsp;s.</td></tr>
+  <tr><td><code>second_pass_min_quality</code></td>
+      <td>Readability floor for sending a clip to the second pass at all.
+      0 on the boat, which means always look.</td></tr>
   <tr><td><code>second_pass_on_empty</code></td>
       <td>Whether to re-decode a silent result. <code>false</code> &mdash; see <a href="#secondpass">5.7.3</a>.</td></tr>
   <tr><td><code>cpu_threads</code>, <code>beam_size</code></td><td>Decoder cost.</td></tr>
-  <tr><td><code>temperatures</code></td><td>Fallback ladder. A single entry disables retries.</td></tr>
-  <tr><td><code>max_messages</code></td><td>Rows kept, oldest deleted first. Default 100.</td></tr>
+  <tr><td><code>temperatures</code>, <code>loop_retry_temperatures</code></td>
+      <td>faster-whisper fallback ladders: the ordinary one, and the one used
+      after a repetition loop is detected. A single entry disables retries;
+      <code>[0.0]</code> and <code>[]</code> on the boat. Second pass
+      only.</td></tr>
+  <tr><td><code>max_messages</code></td>
+      <td>Rows kept in the live log, oldest deleted first. Program default 100;
+      <strong>2000 on the boat</strong>, which is what the tmpfs mount must be
+      sized against &mdash; see <a href="#retention">5.13</a>.</td></tr>
+  <tr><td><code>max_record_gb</code></td>
+      <td>Ceiling on raw I/Q written by <code>--record</code>. 8.0 on the boat.
+      Does not affect ordinary operation.</td></tr>
   <tr><td><code>home_lat</code>, <code>home_lon</code></td>
       <td>Where the receiver is, in decimal degrees. Enables position links.</td></tr>
   <tr><td><code>coord_max_nm</code></td>
@@ -1942,6 +2028,19 @@ later &mdash; with one exception noted under <code>[web]</code> below.</p>
 override almost any radio or DSP setting for that preset alone. Anything it
 does not set falls back to the <code>[radio]</code> value, and settings never
 leak between presets.</p>
+
+<h4>Band and mode</h4>
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>center_hz</code></td>
+      <td>Tuner centre frequency for this preset. Every channel must fall
+      within about 800&nbsp;kHz of it, and nothing may sit on it &mdash; see
+      <a href="#channels-rule">Channels</a> below. 156762500 on the boat.</td></tr>
+  <tr><td><code>mode</code></td>
+      <td><code>"nfm"</code> or <code>"am"</code>. This selects which squelch is
+      used, and the two work on entirely different principles &mdash; see
+      <a href="#squelch">5.4</a>.</td></tr>
+</table>
 
 <h4>Squelch and segmentation</h4>
 <table>
@@ -1961,9 +2060,34 @@ leak between presets.</p>
   <tr><td><code>min_snr_db</code></td><td>both</td>
       <td>Discard threshold. <strong>Set to 0 on marine presets</strong> — on a
           distress channel a weak transmission may be the one that matters.</td></tr>
+  <tr><td><code>fm_split_silence_s</code> / <code>fm_target_message_s</code></td><td>FM</td>
+      <td>Where to break a long transmission: the program looks for this much
+          silence once a message passes the target length, so a split lands in
+          a pause rather than mid-word. 2.0 and 60.0 on the boat.</td></tr>
+  <tr><td><code>preroll_s</code> / <code>tail_keep_s</code></td><td>both</td>
+      <td>Audio kept from before the squelch opened and after it closed.
+          <code>preroll_s</code> is what makes the first syllable survive, and
+          <code>edge_head_trim_ms</code> must track it &mdash; see
+          <a href="#edges">5.7.4</a>.</td></tr>
+  <tr><td><code>audio_hi_hz</code> / <code>fm_audio_hi_hz</code></td><td>AM / FM</td>
+      <td>Top of the audio passband. 3000&nbsp;Hz on the boat: speech
+          intelligibility is there, and the octave above it is mostly
+          discriminator noise.</td></tr>
+  <tr><td><code>transcribe_backlog</code></td><td>both</td>
+      <td>How many messages may wait for transcription. The queue is served
+          newest-first, so the top of the log stays current under load and the
+          backlog drains from the bottom. Program default 12;
+          <strong>400 on the boat</strong>, which a busy six-channel watch
+          needs.</td></tr>
 </table>
 
 <h4>Transcription</h4>
+
+<p>Every key in this table governs the <strong>faster-whisper second
+pass</strong> only. The primary decoder is configured in
+<code>[radio]</code> through the <code>primary_*</code> keys and takes
+nothing from here.</p>
+
 <table>
   <tr><th>Key</th><th>Meaning</th></tr>
   <tr><td><code>vad_filter</code></td>
@@ -1971,13 +2095,18 @@ leak between presets.</p>
           rejects weak transmissions outright, and the carrier squelch has
           already established that something transmitted.</td></tr>
   <tr><td><code>no_speech_threshold</code>, <code>log_prob_threshold</code></td>
-      <td>Raised on marine to keep marginal speech.</td></tr>
-  <tr><td><code>max_tokens_per_second</code></td><td>Output cap, in tokens per second of audio. 8 is generous. <strong>Maximum 14.</strong> The value handed to the decoder is <code>30 &times; this + 16</code>, against Whisper's 448-token context; faster-whisper raises rather than clamping, so 15 makes every message fail. See <a href="#tokencap">5.7.1</a>.</td></tr>
+      <td>Raised on marine to keep marginal speech. 0.8 and &minus;1.5 on the
+          boat.</td></tr>
+  <tr><td><code>compression_ratio_threshold</code></td>
+      <td>faster-whisper's own repetition detector: a transcript that
+          compresses better than this is treated as a loop and retried down the
+          <code>temperatures</code> ladder. 2.4 on the boat.</td></tr>
+  <tr><td><code>max_tokens_per_second</code></td><td>Output cap, in tokens per second of audio. 8 is generous. <strong>Maximum 14.</strong> The value handed to the decoder is <code>30 &times; this + 16</code>, against Whisper's 448-token context; faster-whisper raises rather than clamping, so 15 makes every message fail. <strong>5 on the boat.</strong> Applies to the second pass only. See <a href="#tokencap">5.7.2</a>.</td></tr>
   <tr><td><code>prompt</code></td><td>Decoder priming. Absent on marine — see §5.9.</td></tr>
   <tr><td><code>thermal_pause_above</code> etc.</td><td>Thermal governor. 0 disables.</td></tr>
 </table>
 
-<h4>Channels</h4>
+<h4 id="channels-rule">Channels</h4>
 <pre><code>channels = [
   { name = "Ch16 Distress", freq = 156800000 },
   { name = "ref-a", freq = 156237500, role = "reference" },
@@ -2744,16 +2873,51 @@ itself comes from.</p>
 <p>Every key is optional. This block is read by <code>webui.py</code> alone,
 fresh on each run, so changing it needs neither a patch nor a watchkeeper
 restart.</p>
+
+<div class="note">
+  <b>The defaults are historical &mdash; read the third column</b>
+  <p>The default <code>model</code> and <code>endpoint</code> still name xAI,
+  because that is what this feature was built against. What runs on the boat is
+  <code>gemini-3.8-flash</code>, chosen by running eight engines over the same
+  day of real traffic: three Claude models, three Grok variants and two Gemini.
+  It was the only one of the eight to recover <em>Sir Thomas Lipton Cup</em>
+  from a transcript that said "lifting cup", and it placed map positions more
+  accurately than the rest. It was also among the cheapest, which matters for a
+  button anyone will press twice a day.</p>
+  <p>Nothing about that result is permanent. Model ids move and models are
+  replaced; re-run the comparison before trusting a new one.</p>
+</div>
 <table>
   <tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>provider</code></td><td><code>auto</code></td>
+      <td><code>auto</code> reads the provider off the endpoint host, so
+          moving between xAI and Gemini is one line rather than two that can
+          disagree. <code>gemini</code> on the boat.</td></tr>
   <tr><td><code>model</code></td><td><code>grok-4.7</code></td>
-      <td>Model ids move. Check the live list before pinning one.</td></tr>
+      <td>Model ids move. Check the live list before pinning one.
+          <strong><code>gemini-3.8-flash</code> on the boat</strong>, chosen
+          on measurement.</td></tr>
   <tr><td><code>endpoint</code></td>
       <td><code>https://api.x.ai/v1/chat/completions</code></td>
-      <td>Any OpenAI-compatible chat endpoint.</td></tr>
-  <tr><td><code>timeout_s</code></td><td><code>600</code></td>
+      <td>Any OpenAI-compatible chat endpoint, or Gemini's.
+          <code>https://generativelanguage.googleapis.com/v1beta</code> on the
+          boat. Note the default is <em>not</em> what is running.</td></tr>
+  <tr><td><code>timeout_s</code></td><td><code>1800</code></td>
       <td>Reasoning models sit for a while. This is not the HTTP request the
-          browser made &mdash; that returned immediately.</td></tr>
+          browser made &mdash; that returned immediately. 600 on the
+          boat.</td></tr>
+  <tr><td><code>thinking_budget</code></td><td><code>-1</code></td>
+      <td>Gemini only, and the biggest latency lever on a flash model:
+          <code>0</code> turns thinking off, <code>-1</code> leaves it to the
+          model. <strong>0 on the boat.</strong> Raising it was measured and
+          did not change the part of the brief that gets read &mdash; it
+          improved the evidence tables underneath, not the decisions at the
+          top.</td></tr>
+  <tr><td><code>google_search</code></td><td><code>false</code></td>
+      <td>Gemini only. Grounding costs a round trip to Google before the model
+          answers. Tested and left off: the model searched competently, by
+          notice and light-list number, and the indexed web simply does not
+          carry yesterday's local broadcast notices.</td></tr>
   <tr><td><code>temperature</code></td><td><code>0.3</code></td><td></td></tr>
   <tr><td><code>key_file</code></td><td>blank</td>
       <td>Blank means look beside <code>webui.py</code> for a file whose name
@@ -2762,7 +2926,28 @@ restart.</p>
       <td>Relative to <code>webui.py</code>.</td></tr>
   <tr><td><code>export_query</code></td>
       <td>Ch16+22A, 24&nbsp;h, with text, q&nbsp;&ge;&nbsp;55, &ge;&nbsp;3&nbsp;s</td>
-      <td>Any query <a href="#export">/api/export</a> accepts.</td></tr>
+      <td>Any query <a href="#export">/api/export</a> accepts. On the boat the
+          quality and duration floors are dropped to
+          <code>min_quality=0&amp;min_duration=1</code>, to match the receiver:
+          it no longer filters by readability either, and 1&nbsp;s still skips
+          sub-second squelch artefacts.</td></tr>
+  <tr><td><code>stitch_min_duration_s</code>, <code>stitch_gap_s</code></td>
+      <td><code>85.0</code>, <code>3.0</code></td>
+      <td>Re-join transmissions the receiver cut at
+          <code>max_message_s</code>, so a bulletin split across three clips is
+          not counted as three separate sightings. A segment must itself be at
+          least <code>stitch_min_duration_s</code> long &mdash; a short message
+          is a whole message, not a truncated one &mdash; and the next must
+          begin within <code>stitch_gap_s</code> on the same channel.
+          <code>0</code> disables stitching. 595.0 on the boat, tracking its
+          600&nbsp;s <code>max_message_s</code>.</td></tr>
+  <tr><td><code>vessel_name</code></td><td>blank</td>
+      <td>This boat's name as it would be spoken on the radio. The brief then
+          says plainly whether it was called. Blank disables the rule rather
+          than matching everything.</td></tr>
+  <tr><td><code>fields</code></td><td>blank</td>
+      <td>Which message fields reach the model. Blank means the built-in
+          list.</td></tr>
   <tr><td><code>max_messages</code></td><td><code>1200</code></td>
       <td>Row cap, applied only when <code>export_query</code> sets no
           <code>limit</code>.</td></tr>
@@ -3115,9 +3300,6 @@ filter is firing on something it should not.</p>
 <ol>
   <li>Check the fan is actually spinning. It is easy to leave the connector
       half-seated after any work on the case.</li>
-  <li>Remove the AI HAT if one is fitted. It is not used, it sits directly
-      over the SoC blocking the cooler's airflow, and it was measured costing
-      several degrees of headroom at idle. This receiver no longer has one.</li>
   <li>Drop a channel. Each receiver is roughly 10% of a core.</li>
   <li>Lower <code>cpu_threads</code> to 2, or <code>temperatures</code> to a
       single entry.</li>
