@@ -344,6 +344,13 @@ EDGE_TAIL_PAD_MS = 1000.0
 RETRY_MIN_S = 12.0
 RETRY_MIN_CPS = 6.0
 RETRY_GAIN = 1.5
+
+# Staged re-rolling of a suspect primary decode. See patch_reroll.py.
+REROLL = True
+REROLL_MIN_CPS = 10.0        # below this many chars/s, re-roll
+REROLL_MARGIN = 1.5          # an alternative must be this much longer, in words
+REROLL_MAX_COMPRESS = 3.0    # above this it is a loop, not a transcript
+REROLL_MIN_S = 4.0           # short clips are legitimately sparse
 # Encoder activations are quadratic in input length: a 373 s broadcast cost
 # 3.2 GB and was OOM-killed on an 8 GB Pi. Longer clips are split at the
 # quietest point near the boundary so a spoken coordinate is not cut in half.
@@ -774,6 +781,29 @@ DISTRESS_RE = re.compile(
     r"\bmay ?day\b|\bpan[ -]?pan\b|\bsecurit[ae]\b|\bseelonce\b"
     r"|\bdistress\b|\bsinking\b|\babandon(?:ing)? ship\b"
     r"|\bman overboard\b|\btaking on water\b|\bemergency\b", re.I)
+
+# See webui.py's CH16_ADMONISH: the Coast Guard telling a mariner that
+# channel 16 is for hailing and distress only is a description of the
+# channel, not a report of an emergency. Kept in step with the badge so the
+# journal and the web interface agree about what is worth looking at.
+CH16_ADMONISH_RE = re.compile(
+    r"\bhailing\b[^.]{0,30}\bdistress\b"
+    r"|\bdistress\b[^.]{0,15}\bonly\b"
+    r"|\bradio check\b[^.]{0,90}\bworking (?:frequency|channel)\b", re.I)
+
+# The distress vocabulary MINUS the bare word, so a real emergency mentioned
+# alongside the admonishment is still raised.
+HARD_DISTRESS_RE = re.compile(
+    r"\bmay ?day\b|\bseelonce\b|\bsinking\b|\babandon(?:ing)? ship\b"
+    r"|\bman overboard\b|\btaking on water\b|\bemergency\b"
+    r"|\bdisabled\b|\bassistance\b", re.I)
+
+
+def ch16_admonishment(text):
+    """A radio-check reply, not an incident."""
+    return (bool(CH16_ADMONISH_RE.search(text or ""))
+            and not HARD_DISTRESS_RE.search(text or ""))
+
 
 def all_boilerplate(text):
     """True when every sentence left is a phrase Whisper is known to invent.
@@ -1704,6 +1734,11 @@ RADIO_OVERRIDES = {
     "retry_min_s": "RETRY_MIN_S",
     "retry_min_cps": "RETRY_MIN_CPS",
     "retry_gain": "RETRY_GAIN",
+    "reroll": "REROLL",
+    "reroll_min_cps": "REROLL_MIN_CPS",
+    "reroll_margin": "REROLL_MARGIN",
+    "reroll_max_compress": "REROLL_MAX_COMPRESS",
+    "reroll_min_s": "REROLL_MIN_S",
     "primary_chunk_s": "PRIMARY_CHUNK_S",
     "second_model": "SECOND_MODEL",
     "second_idle_release_s": "SECOND_IDLE_RELEASE_S",
@@ -3238,6 +3273,19 @@ class Store:
                       (float(seconds), row_id))
         self._hist_update(row_id, thermal_wait_s=float(seconds))
 
+    def update_transcript_text(self, row_id: int, text: str):
+        """Write pass 1's text, leaving status alone.
+
+        The row stays 'pending' until the final write sets its status, so
+        the log shows the transcript immediately while the refinement pass
+        decides what it is. Deliberately narrow: nothing else is touched.
+        """
+        c = self._conn()
+        with c:
+            c.execute("UPDATE messages SET transcript=? WHERE id=?",
+                      (text, row_id))
+        self._hist_update(row_id, transcript=text)
+
     def update_transcript(self, row_id: int, text: str, status: str,
                           avg_logprob, no_speech, raw=None, reason=None, rtf=None,
                           second=None, positions=None):
@@ -3484,6 +3532,11 @@ class Transcriber(threading.Thread):
             retry_min_s=RETRY_MIN_S,
             retry_min_cps=RETRY_MIN_CPS,
             retry_gain=RETRY_GAIN,
+            reroll=REROLL,
+            reroll_min_cps=REROLL_MIN_CPS,
+            reroll_margin=REROLL_MARGIN,
+            reroll_max_compress=REROLL_MAX_COMPRESS,
+            reroll_min_s=REROLL_MIN_S,
             cpu_threads=CPU_THREADS,
             beam_size=BEAM_SIZE,
             idle_release_s=SECOND_IDLE_RELEASE_S,
@@ -3642,8 +3695,10 @@ class Transcriber(threading.Thread):
         self.engines.home = (home[0], home[1]) if home else None
 
         t0 = time.time()
-        res = self.engines.transcribe(audio, sr, readable=readable_ok,
-                                      prompt=self.prompt)
+        res = self.engines.transcribe(
+            audio, sr, readable=readable_ok, prompt=self.prompt,
+            on_first=lambda t: self.store.update_transcript_text(
+                row_id, strip_annotations(t)))
         rtf = (time.time() - t0) / max(dur, 1e-6)
 
         # strip_annotations stays: it removes "[MUSIC]" and the like, which
@@ -3675,7 +3730,7 @@ class Transcriber(threading.Thread):
         else:
             status = "ok"
 
-        if text and DISTRESS_RE.search(text):
+        if text and DISTRESS_RE.search(text) and not ch16_admonishment(text):
             # Tiered, the same way the web interface tiers its badge.
             #
             # Matching the vocabulary alone fired on 13% of all decoded traffic

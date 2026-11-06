@@ -976,6 +976,14 @@ before they age out of the ring and decoding them by hand.</p>
 
 <h3 id="secondpass">5.7.3 When the second pass runs, and who wins</h3>
 
+<p>Read <a href="#reroll">5.7.5</a> first: a suspect primary result is now
+re-rolled against other crops of the same audio <em>before</em> any of this,
+and that recovers more, faster, than handing the clip to the older engine. The
+second pass was briefly used as a rescue for sparse text and withdrawn &mdash;
+it was never once chosen over a re-roll on the measured clips, scored 81.8%
+against the primary's 100% on a complete control, and returned three words in
+51&nbsp;seconds on the one clip neither could read.</p>
+
 <p>The second pass exists for one thing: <strong>digits</strong>. The primary
 reads prose better and never invents, but on a dense numeric readback the
 older model sometimes recovers a coordinate the primary mangles. So a
@@ -1208,6 +1216,139 @@ decodes at every setting from 100&nbsp;ms up and comes back empty at 0.</p>
   together; separating them afterwards moved the tail to 100&nbsp;ms, above.</p>
 </div>
 
+<div class="warn-box">
+  <b>Best on average is not reliable on any one clip</b>
+  <p>Everything above measures crops across a corpus, and 400&nbsp;ms wins
+  that comparison. It does not follow that 400&nbsp;ms is safe on a given
+  recording. On the clip in <a href="#reroll">5.7.5</a> the head trim behaves
+  non-monotonically &mdash; 0&nbsp;ms fails, 200 works, 400 fails, 600 works
+  &mdash; because the outcome turns on a branch that is close to a tie, and
+  any shift of the input perturbs it. There is no better number to find. The
+  remedy is a second roll, not a different setting.</p>
+</div>
+
+<h3 id="reroll">5.7.5 Parakeet: re-rolling a suspect decode</h3>
+
+<p>Parakeet is a transducer with a <em>duration head</em>: with every token it
+also predicts how many encoder frames to skip before looking again. That is a
+large part of why it is fast. It is also how a decode can end while audio
+remains.</p>
+
+<p>Its decoder carries a prediction network &mdash; an internal language model
+over what it has already emitted. A USCG safety preamble is the most
+repetitive thing on the band, and after ten seconds of near-identical tokens
+that state is strongly predicting more of the same. When the audio stops
+repeating, the model can emit a blank with a maximal skip rather than break
+the pattern. A few of those swallow the rest of the clip. <strong>The audio is
+clean, the signal is strong, and the decode simply ends.</strong></p>
+
+<div class="warn-box">
+  <b>What this cost before it was found</b>
+  <p>A PAN PAN on 6 November decoded to its preamble and stopped at
+  &ldquo;&hellip;Coast Guard Sector Los Angeles, Long Beach&rdquo;. What was
+  dropped: <em>&ldquo;time 1308 Greenwich. The previously reported fire on
+  board has been deemed a false alert. Cancel Pan Pan. Break.&rdquo;</em></p>
+  <p>The log recorded an active fire emergency. The broadcast was its
+  cancellation. That is worse than an incomplete transcript &mdash; it is an
+  inverted one. A <code>SECURITE</code> the same morning kept only its
+  sign-off, losing a drifting-vessel hazard entirely: nine words survived of
+  sixty-two.</p>
+</div>
+
+<h4>The tell is in the output</h4>
+
+<p>Eight crops of that one clip, scored against a transcript taken by ear.
+How the model wrote the opening prowords separated the outcomes exactly:</p>
+
+<table>
+  <tr><th>First four proword tokens</th><th>Crops</th><th>Outcome</th></tr>
+  <tr><td><code>Pon Pon Pon Pon</code> &mdash; identical</td><td>5</td>
+      <td><strong>Truncated.</strong> 0, 0, 0, 0 and 1 of 10 key words.</td></tr>
+  <tr><td><code>Pon Pon Pon Pong</code>, <code>Pon Pawn Pawn Pawn</code>,
+          <code>Pon Pawn Pon Pawn</code> &mdash; varied</td><td>3</td>
+      <td><strong>Complete.</strong> 7 of 8 key words, 91.8% recall.</td></tr>
+</table>
+
+<p>Every run that wrote the repetition identically locked and ran away. Every
+run that wavered by a single token carried on and transcribed the message.
+Nothing about the audio differed between them.</p>
+
+<h4>Why the trim length is not the answer</h4>
+
+<p>By head trim on that clip: 0&nbsp;ms failed, 200 worked, <strong>400 &mdash;
+the configured value &mdash; failed</strong>, 600 worked. The encoder uses
+global attention, so every output frame attends to the whole clip and shifting
+the input by 200&nbsp;ms changes every frame a little. At the branch point the
+choice between emitting another token and skipping ahead is close to a tie,
+and the perturbation flips it. This is a coin flip, not a parameter with a
+better value, and <a href="#edges">5.7.4</a>&rsquo;s corpus sweep is not
+contradicted by it: 400&nbsp;ms really is the best crop on average. It is
+simply not dependable on any individual recording.</p>
+
+<h4>What runs now</h4>
+
+<p>Pass&nbsp;1 uses the configured crop and its text is written to the database
+<strong>immediately</strong>, so the log stays current within the usual few
+seconds. Refinement then happens underneath and rewrites the row. The receiver
+never waits on it.</p>
+
+<table>
+  <tr><th>Trigger</th><th>Why</th></tr>
+  <tr><td>Below <code>reroll_min_cps</code> characters per second</td>
+      <td>Good decodes run 10&ndash;17; this one came back at 8.0.</td></tr>
+  <tr><td>Ends on a station identification with no <code>out</code> or
+          <code>over</code></td>
+      <td>The shape of a truncation. Needed because a decode can be cut
+          without being sparse. The sign-off test is what stops this firing
+          on every correct broadcast, since they all end on the station:
+          &ldquo;&hellip;Sector San Diego out&rdquo; is complete,
+          &ldquo;&hellip;Long Beach&rdquo; is not.</td></tr>
+  <tr><td>A canonical <code>PAN PAN</code> or <code>MAYDAY</code></td>
+      <td>Importance, regardless of how healthy the text looks.</td></tr>
+</table>
+
+<p>Any of the three runs <em>all</em> the alternative crops, not one. That is
+deliberate: the proword trigger cannot be relied on for the clips that need it
+most, because a truncation loses whatever part held the proword. One measured
+clip lost its entire preamble and so looked like ordinary traffic.</p>
+
+<p>A replacement must be <code>reroll_margin</code> times longer in
+<strong>words</strong> &mdash; 1.5&times;, the same ratio
+<code>retry_gain</code> has always used. On a complete control clip the
+alternative came back at 21 words against 22, and keeping the original came
+down to a single word; the margin makes that safe by construction rather than
+by luck.</p>
+
+<p>The loop guard is a <em>compression ratio</em>, not a character rate.
+Measured: real decodes compress at 1.75&ndash;1.94, a looping decode at 12.96.
+A rate ceiling was tried first and rejected &mdash; at 20&nbsp;cps it came
+within 1.1 of discarding a correct decode, because dense genuine speech is not
+a loop.</p>
+
+<div class="warn-box">
+  <b>A decode that came back empty is never re-rolled</b>
+  <p>A re-roll is a comparison, and a comparison needs something to compare
+  against. With text in hand an alternative has to clear the margin and the
+  loop guard. With nothing in hand it only has to exist &mdash; ten words beat
+  zero at any margin.</p>
+  <p>This was found the hard way. A 4-second Ch69 clip of static, quality 45.4
+  and unintelligible by ear, returned nothing on pass&nbsp;1 and <em>&ldquo;But
+  I'm not sure if I can do it&rdquo;</em> on all three crops: generic filler
+  manufactured from noise, which then landed as ordinary text because it was
+  no longer empty.</p>
+  <p>A readability floor cannot separate that case. At 45.4 it sits inside the
+  normal range, and a floor at 50 would drop 41% of genuinely sparse traffic
+  while remaining a coin flip on clips like it. What separates a real recovery
+  is surviving text: the two measured rescues had 26 and 9 words to build on.
+  Empty results keep <a href="#secondpass">the second pass</a>, whose output is
+  marked <code>low</code> precisely because that is where invention happens.
+  &ldquo;The decoder returned nothing&rdquo; is at least true.</p>
+</div>
+
+<p>Re-rolls announce themselves in the row&rsquo;s reason line and in the
+journal, with each crop&rsquo;s word count and what pass&nbsp;1 said, so a
+recovery can be checked rather than taken on trust.</p>
+
 <h3 id="prowords">5.8 Prowords, and why there is no phrase filter</h3>
 
 <p>The normalisers below run on the finished transcript, whichever engine
@@ -1421,7 +1562,31 @@ a quarter of everything is not an alarm.</p>
       <td>Routine safety broadcast. No badge.</td></tr>
   <tr><td>Distress vocabulary with <em>no</em> canonical proword</td>
       <td><strong>Urgent.</strong></td></tr>
+  <tr><td>The channel&nbsp;16 admonishment</td>
+      <td>Not flagged. See below.</td></tr>
 </table>
+
+<p>That last row is a carve-out from the one above it, and it earns its keep:
+the Coast Guard broadcasts this several times a day at mariners who call for a
+radio check.</p>
+
+<pre><code>Mariner requesting radio check. This is United States Coast Guard
+  Sector Los Angeles. Be advised, Captain, Channel 16 is for hailing
+  distress only. Conduct your radio checks on a working frequency.</code></pre>
+
+<p>There is no proword, so it reaches the vocabulary rule and fires on the
+bare word <code>distress</code> &mdash; which there names what the channel is
+<em>for</em>. Nothing is happening. A standing daily false alarm on the one
+indicator that is supposed to mean something.</p>
+
+<p>The suppression is narrow by design, because the vocabulary rule is the
+part that works. It applies only when the admonishment is the <strong>sole</strong>
+trigger: a second list holds the vocabulary <em>minus</em> the bare word
+&mdash; mayday, sinking, abandon ship, man overboard, taking on water,
+emergency, disabled, assistance &mdash; and any of those overrides it. So
+&ldquo;channel 16 is for hailing distress only <em>but we have a sinking
+vessel</em>&rdquo; is still urgent, and so is &ldquo;vessel in distress off
+Point Fermin, requesting assistance&rdquo;.</p>
 
 <p>That last row is the one that matters and the one it would be easiest to
 get wrong. Real incidents are worked conversationally, not announced:</p>
@@ -1977,13 +2142,32 @@ later &mdash; with one exception noted under <code>[web]</code> below.</p>
       120 on the boat.</td></tr>
   <tr><td><code>retry_min_s</code>, <code>retry_min_cps</code>,
           <code>retry_gain</code></td>
-      <td>Re-decode an implausibly sparse primary result against the raw,
-      untreated audio. A clip at least <code>retry_min_s</code> long whose
-      transcript comes back under <code>retry_min_cps</code> characters per
-      second is tried again with its amplitude multiplied by
-      <code>retry_gain</code>. Good decodes run 10&ndash;17 characters per
-      second; the failures this catches sat at 3.2. 12.0, 6.0 and 1.5 on the
-      boat; <code>retry_min_cps = 0</code> disables it.</td></tr>
+      <td>The original sparse-decode retry, superseded in practice by
+      <a href="#reroll">5.7.5</a> but still live. A clip at least
+      <code>retry_min_s</code> long whose transcript comes back under
+      <code>retry_min_cps</code> characters per second is decoded a second
+      time against the <strong>raw, untreated</strong> audio, and that result
+      is adopted only if it is <code>retry_gain</code> times longer.
+      <code>retry_gain</code> is that ratio &mdash; <em>not</em> an amplitude
+      multiplier; nothing is applied to the audio. 12.0, 6.0 and 1.5 on the
+      boat; <code>retry_min_cps = 0</code> disables it. Note that raw audio is
+      a poor alternative to try: measured, it fails in the same way as the
+      configured crop, which is why the re-roll in 5.7.5 uses different crops
+      instead.</td></tr>
+  <tr><td><code>reroll</code>, <code>reroll_min_cps</code>,
+          <code>reroll_margin</code>, <code>reroll_max_compress</code>,
+          <code>reroll_min_s</code></td>
+      <td>Staged re-rolling of a suspect decode &mdash; see
+      <a href="#reroll">5.7.5</a>. A decode below
+      <code>reroll_min_cps</code> characters per second, or ending
+      mid-broadcast, or carrying a <code>PAN PAN</code> or
+      <code>MAYDAY</code>, is decoded again at three other crops. A result
+      replaces the first only if it is <code>reroll_margin</code> times longer
+      in <strong>words</strong> and compresses no better than
+      <code>reroll_max_compress</code>, which is the loop guard. Clips shorter
+      than <code>reroll_min_s</code> are left alone, as is any decode that
+      came back empty. Defaults true, 10.0, 1.5, 3.0 and 4.0;
+      <code>reroll = false</code> disables the whole thing.</td></tr>
   <tr><td><code>model</code></td>
       <td>The faster-whisper model used for the second pass.
       <code>medium.en</code> on the boat. The bare name is historical: this was

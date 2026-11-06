@@ -77,6 +77,29 @@ edge_head_pad_ms  = 0.0
 edge_tail_trim_ms = 100.0
 edge_tail_pad_ms  = 0.0
 
+# Staged re-rolling of a suspect decode. Parakeet's decoder can degenerate on
+# a repetitive opening -- a USCG safety preamble is the most repetitive thing
+# on the band -- and fast-forward through the rest of a clip on clean audio.
+# The trim length is not the remedy: measured on one clip, 0 ms failed, 200
+# worked, 400 failed and 600 worked, because the outcome turns on a near-tied
+# branch that any shift of the input perturbs. The remedy is a second roll.
+#
+# Pass 1 is written to the database immediately, so the log stays current;
+# refinement rewrites the row a few seconds later. A decode is re-rolled when
+# it is sparse, ends mid-broadcast, or carries a PAN PAN or MAYDAY. A result
+# replaces the first only if it is reroll_margin times longer in WORDS and
+# compresses no better than reroll_max_compress (the loop guard -- real
+# decodes compress at 1.75-1.94, a looping one at 12.96).
+#
+# A decode that came back EMPTY is never re-rolled: with nothing to compare
+# against, any invention wins. Those keep the second pass, whose output is
+# marked low precisely because that is where invention happens.
+reroll              = true
+reroll_min_cps      = 10.0
+reroll_margin       = 1.5
+reroll_max_compress = 3.0
+reroll_min_s        = 4.0
+
 # Retry an implausibly sparse decode against the raw, untreated audio. Good
 # decodes run 10-17 characters per second; the known failures sat at 3.2, so
 # a clip at least retry_min_s long that comes back under retry_min_cps is

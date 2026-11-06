@@ -1581,10 +1581,25 @@ const URGENT_PW = /\bPAN PAN\b|\bMAYDAY\b/;
 // cuts that to 19 while keeping the case that matters: distress worked
 // conversationally, with no proword at all. All three real incidents on
 // 25 Oct read that way.
+// Channel 16's own description, which the Coast Guard broadcasts several
+// times a day at mariners who call for a radio check: "channel one six is
+// for hailing distress only, conduct your radio checks on a working
+// frequency". The word there names the channel's purpose -- nothing is
+// happening -- but the message carries no proword, so without this it
+// reaches the vocabulary fallback and raises the badge every time.
+//
+// Suppresses ONLY when that is the sole trigger. HARD_DISTRESS is the
+// vocabulary minus the bare word, so an emergency described in the same
+// breath still flags: "channel 16 is for hailing distress only but we have
+// a sinking vessel" is still urgent.
+const CH16_ADMONISH = /\bhailing\b[^.]{0,30}\bdistress\b|\bdistress\b[^.]{0,15}\bonly\b|\bradio check\b[^.]{0,90}\bworking (?:frequency|channel)\b/i;
+const HARD_DISTRESS = /\bmay ?day\b|\bseelonce\b|\bsinking\b|\babandon(?:ing)? ship\b|\bman overboard\b|\btaking on water\b|\bemergency\b|\bdisabled\b|\bassistance\b/i;
+
 const flagged = m => {
   if (!m.text) return false;
   if (URGENT_PW.test(m.text)) return true;
   if (ROUTINE_PW.test(m.text)) return false;
+  if (CH16_ADMONISH.test(m.text) && !HARD_DISTRESS.test(m.text)) return false;
   return DISTRESS.test(m.text);
 };
 

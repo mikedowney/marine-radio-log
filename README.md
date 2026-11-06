@@ -232,6 +232,35 @@ may need:
 Quantisation is set to `"none"`. `int8` is faster and measurably worse, and on
 radio audio that is the wrong trade.
 
+### When the primary gives up mid-broadcast
+
+Parakeet is a transducer with a duration head: with each token it also predicts
+how many frames to skip. That is part of why it is fast, and it is also how a
+decode can end while audio remains. On a highly repetitive opening — and a
+Coast Guard safety preamble is the most repetitive thing on the band — its
+decoder can settle into predicting more of the same, then emit a maximal skip
+rather than break the pattern. **The audio is clean and the decode simply
+stops.**
+
+This is not hypothetical. A PAN PAN was logged as its preamble alone, dropping
+*"the previously reported fire on board has been deemed a false alert. Cancel
+Pan Pan."* The log recorded an active emergency; the broadcast was its
+cancellation.
+
+The trim length is not the fix. On that clip a 0 ms head trim failed, 200 ms
+worked, 400 ms failed and 600 ms worked — non-monotonic, because the encoder
+uses global attention and any shift perturbs a branch that is close to a tie.
+There is no better number to choose.
+
+So a suspect decode is **re-rolled** at other crops and the fullest plausible
+result wins. Pass 1 is written immediately so the log stays current;
+refinement rewrites the row a few seconds later. A replacement must be 1.5×
+longer in words, and must not compress like a loop. A decode that came back
+*empty* is never re-rolled — with nothing to compare against, any invention
+wins, and "the decoder returned nothing" is at least true.
+
+`docs.html` §5.7.5 has the measurements.
+
 ### Choosing a model
 
 Sixteen configurations were benchmarked against two hand-transcribed clips: one

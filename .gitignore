@@ -28,6 +28,9 @@ venv*/
 *API_KEY*.txt
 *api_key*.txt
 *_KEY.txt
+# Catch-all for any other spelling: the three above are the files that exist
+# today, and a fourth provider would arrive under a name nobody predicted.
+*[Kk][Ee][Yy]*.txt
 *.lic
 
 # --- the live configuration ------------------------------------------------

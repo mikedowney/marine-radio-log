@@ -68,6 +68,7 @@ import statistics
 import sys
 import time
 import tomllib
+import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -595,6 +596,51 @@ def adjudicate(wk, primary, second, prefer="second"):
 # Chunking
 # ===========================================================================
 
+# Re-roll crops, tried in order after the configured one. They must be
+# MAXIMALLY different from production and from each other: measured, crops
+# that differ only slightly share a fate (400-trim and 400-trim-no-tail both
+# failed; raw and tail-trim-only, 100 ms apart, both failed). Raw audio is
+# deliberately absent -- it is in the same losing family and is what the old
+# retry reached for.
+#
+#   name        head_trim  head_pad  tail_trim  tail_pad   (milliseconds)
+REROLL_CROPS = (
+    ("pad200",      0.0,     200.0,      0.0,     200.0),
+    ("head200",   200.0,       0.0,    100.0,       0.0),
+    ("head600",   600.0,       0.0,    100.0,       0.0),
+)
+
+# A transcript that ends on a station identification without a terminal
+# proword. Measured: "...Coast Guard Sector Los Angeles, Long Beach" was
+# truncated; "...Sector San Diego out" was complete. Without the sign-off
+# test this fires on every correct broadcast, since they all end on the
+# station. Catches truncation that is not sparse enough to trip the rate.
+_STATION_TAIL = re.compile(r"long beach|coast guard|san diego|sector", re.I)
+_TERMINAL_PW = re.compile(r"\b(out|over|standing by|clear)\b[.!]?\s*$", re.I)
+
+
+def ends_mid_broadcast(text):
+    t = (text or "").strip()
+    return bool(_STATION_TAIL.search(t[-45:])) and not _TERMINAL_PW.search(t)
+
+
+def n_words(text):
+    return len(re.findall(r"[^\W_]+", text or "", re.UNICODE))
+
+
+def compress_ratio(text):
+    """Repetition measure. Real decodes 1.75-1.94; a looping decode 12.96.
+
+    This replaces a characters-per-second ceiling, which measured the wrong
+    thing: dense genuine speech is not a loop, and a 20 cps ceiling nearly
+    rejected a correct 18.9 cps decode.
+    """
+    b = (text or "").encode("utf-8", "ignore")
+    if len(b) < 24:
+        return 1.0
+    return len(b) / max(len(zlib.compress(b, 9)), 1)
+
+
 def edge_treat(audio, sr, head_trim_ms, head_pad_ms,
                tail_trim_ms, tail_pad_ms):
     """Cut the head and tail, then pad each end with silence.
@@ -725,6 +771,8 @@ class Engines:
                  head_trim_ms=0.0, head_pad_ms=0.0,
                  tail_trim_ms=0.0, tail_pad_ms=0.0,
                  retry_min_s=0.0, retry_min_cps=0.0, retry_gain=1.5,
+                 reroll=True, reroll_min_cps=10.0, reroll_margin=1.5,
+                 reroll_max_compress=3.0, reroll_min_s=4.0,
                  idle_release_s=DEFAULT_IDLE_RELEASE_S,
                  second_pass_on_empty=True, second_pass_min_s=None,
                  log=None):
@@ -753,6 +801,12 @@ class Engines:
         self.retry_min_s = float(retry_min_s or 0)
         self.retry_min_cps = float(retry_min_cps or 0)
         self.retry_gain = float(retry_gain or 1.5)
+        # Staged re-rolling. See patch_reroll.py for the measurements.
+        self.reroll = bool(reroll)
+        self.reroll_min_cps = float(reroll_min_cps or 0)
+        self.reroll_margin = float(reroll_margin or 1.5)
+        self.reroll_max_compress = float(reroll_max_compress or 3.0)
+        self.reroll_min_s = float(reroll_min_s or 0)
         self.cpu_threads = int(cpu_threads)
         self.beam_size = int(beam_size)
         self.idle_release_s = float(idle_release_s or 0)
@@ -863,6 +917,107 @@ class Engines:
             return False
         return (len(text or "") / max(secs, 1e-9)) < self.retry_min_cps
 
+    def _normalise(self, raw):
+        """Proword, station and frequency repair, as one step.
+
+        Lifted out of transcribe() so pass 1 can be normalised and written
+        before refinement starts -- the log must not show "Pon Pon" for a
+        few seconds and then correct itself.
+        """
+        text, pw, unknown = normalise_prowords(raw)
+        text, station = correct_station(text)
+        text, freq = normalise_frequency(text)
+        return text, pw, unknown, station, freq
+
+    def _crop_decode(self, audio, sr, crop=None):
+        """One decode at one crop. crop=None means the configured one."""
+        if crop is None:
+            ht, hp, tt, tp = (self.head_trim_ms, self.head_pad_ms,
+                              self.tail_trim_ms, self.tail_pad_ms)
+        else:
+            ht, hp, tt, tp = crop
+        a = (edge_treat(audio, sr, ht, hp, tt, tp)
+             if (ht or hp or tt or tp) else audio)
+        return self._run_pk(a, sr)
+
+    def _refine(self, audio, sr, first_raw, first_text, proword, n_chunks):
+        """Re-roll a suspect decode and keep whichever says most.
+
+        Returns (raw, chunks, flags). The first result is returned unchanged
+        unless an alternative clears the word-count margin AND the loop guard.
+        """
+        flags = []
+        secs = len(audio) / float(sr or 1)
+        if not self.reroll or secs < self.reroll_min_s:
+            return first_raw, n_chunks, flags
+
+        # An empty pass 1 gives the comparison nothing to stand on: any
+        # text a re-roll invents wins by default, because ten words beats
+        # zero at any margin. Measured on a static Ch69 clip (quality 45.4,
+        # unintelligible by ear) that returned nothing on pass 1 and "But
+        # I'm not sure if I can do it" on all three crops.
+        #
+        # A readability floor cannot separate these -- at 50 it would drop
+        # 41% of genuinely sparse traffic and still be a coin flip here.
+        # Surviving text is what distinguishes a real recovery: m26953 had
+        # 26 words before re-rolling to 51, m26981 had 9 before 62.
+        #
+        # Empty results keep second_pass_on_empty, which marks its output
+        # 'low' precisely because that is where invention happens.
+        if is_empty_result(first_text):
+            return first_raw, n_chunks, flags
+
+        rate = len(first_text or "") / max(secs, 1e-9)
+        sparse = self.reroll_min_cps and rate < self.reroll_min_cps
+        cut = ends_mid_broadcast(first_text)
+        prio = (proword or "").upper() in ("MAYDAY", "PAN PAN")
+
+        if not (sparse or cut or prio):
+            return first_raw, n_chunks, flags
+
+        # A truncated decode loses whatever part held the proword, so the
+        # priority trigger cannot be relied on to fire for the clips that
+        # need it most -- m26621 lost its preamble and so looked ordinary.
+        # Anything suspect therefore gets every crop, not just one.
+        why = ("priority proword %s" % proword if prio
+               else "sparse %.1f cps" % rate if sparse
+               else "ends mid-broadcast")
+
+        best_raw, best_text = first_raw, first_text
+        best_n, best_words = n_chunks, n_words(first_text)
+        tried = []
+        for name, ht, hp, tt, tp in REROLL_CROPS:
+            try:
+                raw, n = self._crop_decode(audio, sr, (ht, hp, tt, tp))
+            except Exception as exc:                        # noqa: BLE001
+                tried.append("%s failed" % name)
+                continue
+            text = self._normalise(raw)[0]
+            w = n_words(text)
+            tried.append("%s %dw" % (name, w))
+            if w < best_words * self.reroll_margin:
+                continue
+            if compress_ratio(text) > self.reroll_max_compress:
+                tried[-1] += " (repetitive, rejected)"
+                continue
+            best_raw, best_text, best_n, best_words = raw, text, n, w
+
+        if best_words > n_words(first_text):
+            # The original matters as much as the gain: a word count says
+            # something was recovered, not that the first decode was wrong.
+            snippet = (first_text or "").strip() or "(nothing)"
+            if len(snippet) > 160:
+                snippet = snippet[:157] + "..."
+            flags.append('re-rolled (%s): %d words -> %d [%s]; '
+                         'pass 1 said: "%s"'
+                         % (why, n_words(first_text), best_words,
+                            ", ".join(tried), snippet))
+            if self.log:
+                self.log.info("re-roll %s: %d words -> %d (%s); pass 1 said: %r",
+                              why, n_words(first_text), best_words,
+                              ", ".join(tried), first_text or "")
+        return best_raw, best_n, flags
+
     def _pk_text(self, audio, sr):
         # Treat the edges ONCE, on the whole clip, before any split. Doing
         # it per chunk would cut real audio out of every seam.
@@ -960,7 +1115,7 @@ class Engines:
 
     # ------------------------------------------------------------- public
     def transcribe(self, audio, sr, readable=True, prompt=None,
-                   suppress=None):
+                   suppress=None, on_first=None):
         """Transcribe one transmission.
 
         `readable` is the caller's independent evidence that the recording
@@ -970,7 +1125,21 @@ class Engines:
         res = Result()
 
         t0 = time.time()
-        raw, res.chunks = self._pk_text(audio, sr)
+        # Pass 1: the configured crop. Written to the database at once by
+        # the on_first callback so the log stays current; refinement then
+        # rewrites the row a few seconds later.
+        raw, res.chunks = self._crop_decode(audio, sr, None)
+        first_text, first_pw, _u1, _s1, _f1 = self._normalise(raw)
+        if on_first:
+            try:
+                on_first(first_text)
+            except Exception as exc:                        # noqa: BLE001
+                if self.log:
+                    self.log.warning("first-pass write failed: %s", exc)
+
+        raw, res.chunks, _reroll_flags = self._refine(
+            audio, sr, raw, first_text, first_pw, res.chunks)
+        res.flags.extend(_reroll_flags)
         res.primary_s = time.time() - t0
 
         res.text, res.proword, unknown_pw = normalise_prowords(raw)
