@@ -28,6 +28,7 @@ import sqlite3
 import subprocess
 import sys
 import urllib.parse
+import ipaddress
 import threading
 import urllib.error
 import urllib.request
@@ -890,7 +891,8 @@ def bundle_note(row, audio_file):
         crest = f"{peak / max(TARGET_RMS, 1e-9):.1f} (pre-limiter)"
 
     note = (
-        f"{wk.STATION_NAME} -- message export\n"
+        # Not STATION_NAME: these notes leave the boat.
+        "Radio Log -- message export\n"
         + "=" * 52 + "\n\n"
         "MESSAGE\n"
         + line("Channel", row["channel"])
@@ -947,6 +949,300 @@ def bundle_note(row, audio_file):
     )
 
     return stem, note
+
+
+_IDX_STAMP = re.compile(r"(\d{8})_(\d{6})_")
+
+
+def _idx_local(audio, fallback_iso):
+    """Station-local time, preferred from the filename the receiver wrote."""
+    m = _IDX_STAMP.search(audio or "")
+    if m:
+        try:
+            dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+            return dt, dt.strftime("%H:%M:%S"), dt.strftime("%A %-d %B %Y")
+        except ValueError:
+            pass
+    dt = datetime.fromisoformat(fallback_iso.replace("Z", "+00:00")).astimezone()
+    return dt, dt.strftime("%H:%M:%S"), dt.strftime("%A %-d %B %Y")
+
+
+def build_index(summary):
+    msgs = summary.get("messages") or []
+    rows, t0 = [], None
+    for m in msgs:
+        dt, clock, datestr = _idx_local(m.get("audio"), m["started_at"])
+        if t0 is None:
+            t0 = dt
+        rows.append({
+            "id": m.get("id"),
+            "ch": m.get("channel") or "",
+            "mhz": m.get("mhz"),
+            "clock": clock,
+            "date": datestr,
+            "offset": round((dt - t0).total_seconds()),
+            "dur": round(float(m.get("duration_s") or 0), 1),
+            "q": m.get("quality"),
+            "snr": m.get("snr_db"),
+            "text": (m.get("transcript") or "").strip(),
+            "orig": (m.get("original_transcript") or "").strip() or None,
+            "corrected": bool(m.get("corrected")),
+            "wav": m.get("audio") or "",
+            "distress": "distress" in (m.get("channel") or "").lower(),
+        })
+
+    span = rows[-1]["offset"] + rows[-1]["dur"] if rows else 0
+    meta = {
+        # Deliberately NOT summary["station"]: this page exists to be handed
+        # to other people, and the station name carries the vessel's name.
+        "station": "Radio Log",
+        "date": rows[0]["date"] if rows else "",
+        "first": rows[0]["clock"] if rows else "",
+        "last": rows[-1]["clock"] if rows else "",
+        "count": len(rows),
+        "span": span,
+    }
+    return INDEX_PAGE.replace("/*DATA*/", json.dumps({"meta": meta, "rows": rows}))
+
+
+INDEX_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio traffic</title>
+<style>
+  :root{
+    --bg:#0d1518; --panel:#152026; --panel2:#19272e; --line:#24353d;
+    --text:#dce7ea; --muted:#8299a2; --accent:#7FB2C4; --warn:#C9A227;
+    --red:#d8453f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,
+         "Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:860px;margin:0 auto;padding:28px 16px 80px}
+
+  header{border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:6px}
+  h1{margin:0 0 4px;font-size:20px;font-weight:600;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13.5px}
+  .sub b{color:var(--text);font-weight:600}
+
+  .bar{display:flex;gap:10px;align-items:center;margin:16px 0 4px;flex-wrap:wrap}
+  button{
+    font:inherit;font-size:13.5px;color:var(--text);background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;padding:7px 13px;
+    cursor:pointer;transition:background .12s,border-color .12s;
+  }
+  button:hover{background:#203139;border-color:#32474f}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06161c;font-weight:600}
+  button.primary:hover{background:#95c4d4}
+  .hint{color:var(--muted);font-size:12.5px;margin-left:auto}
+  kbd{
+    font:inherit;font-size:11.5px;background:#0a1115;border:1px solid var(--line);
+    border-bottom-width:2px;border-radius:4px;padding:1px 5px;color:var(--muted);
+  }
+
+  ol{list-style:none;margin:14px 0 0;padding:0}
+  li{
+    position:relative;background:var(--panel);border:1px solid var(--line);
+    border-radius:9px;margin-bottom:9px;overflow:hidden;cursor:pointer;
+    transition:border-color .12s,background .12s;
+  }
+  li:hover{background:var(--panel2);border-color:#2e434c}
+  li.on{border-color:var(--accent);background:var(--panel2)}
+  li.distress::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--red);
+  }
+  .inner{padding:12px 14px 12px 17px;display:flex;gap:13px;align-items:flex-start}
+
+  .play{
+    flex:0 0 auto;width:30px;height:30px;border-radius:50%;
+    background:#0b1317;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;margin-top:1px;
+  }
+  li.on .play{background:var(--accent);border-color:var(--accent)}
+  .play svg{width:11px;height:11px;fill:var(--muted);margin-left:1px}
+  li.on .play svg{fill:#06161c;margin-left:0}
+
+  .body{flex:1 1 auto;min-width:0}
+  .meta{
+    display:flex;gap:9px;align-items:baseline;flex-wrap:wrap;
+    font-size:12px;color:var(--muted);margin-bottom:3px;
+  }
+  .clock{color:var(--text);font-weight:600;font-size:13px;
+         font-variant-numeric:tabular-nums}
+  .off{font-variant-numeric:tabular-nums}
+  .tag{
+    font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;
+    border:1px solid var(--line);border-radius:4px;padding:1px 5px;
+  }
+  .tag.fix{border-color:var(--warn);color:var(--warn)}
+  .text{font-size:15px;line-height:1.52;word-wrap:break-word}
+  .orig{
+    display:none;margin-top:7px;padding:8px 10px;border-left:2px solid var(--warn);
+    background:#0c1418;border-radius:0 5px 5px 0;
+    font-size:13.5px;color:var(--muted);
+  }
+  li.showorig .orig{display:block}
+  .orig b{color:var(--warn);font-weight:600;display:block;font-size:11px;
+          letter-spacing:.4px;text-transform:uppercase;margin-bottom:3px}
+
+  .prog{height:2px;background:var(--accent);width:0;transition:width .1s linear}
+
+  footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--muted);font-size:12.5px}
+  footer p{margin:0 0 7px}
+  a{color:var(--accent)}
+
+  @media (max-width:560px){
+    .wrap{padding:20px 12px 70px}
+    .text{font-size:14.5px}
+    .hint{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="st"></h1>
+    <div class="sub" id="sum"></div>
+  </header>
+
+  <div class="bar">
+    <button class="primary" id="all">▶ Play all in sequence</button>
+    <button id="fix" hidden>Show original transcripts</button>
+    <span class="hint"><kbd>space</kbd> play · <kbd>↑</kbd><kbd>↓</kbd> move</span>
+  </div>
+
+  <ol id="list"></ol>
+
+  <footer>
+    <p id="note"></p>
+    <p>Audio plays from the .wav files beside this page — keep them in the
+       same folder. Nothing here needs a network connection.</p>
+  </footer>
+</div>
+
+<audio id="au"></audio>
+<script>
+const DATA = /*DATA*/;
+const list = document.getElementById("list");
+const au = document.getElementById("au");
+let cur = -1, chain = false;
+
+document.getElementById("st").textContent = DATA.meta.station;
+const m = DATA.meta;
+document.getElementById("sum").innerHTML =
+  "<b>" + m.count + "</b> transmission" + (m.count === 1 ? "" : "s") +
+  " · " + m.date + " · <b>" + m.first + "</b> to <b>" + m.last + "</b>" +
+  " · spanning " + fmtDur(m.span);
+
+function fmtDur(s){
+  s = Math.round(s);
+  if (s < 60) return s + " s";
+  const mm = Math.floor(s / 60), ss = s % 60;
+  return mm + " min " + (ss ? ss + " s" : "").trim();
+}
+function esc(s){
+  return (s || "").replace(/[&<>"]/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+
+let anyFixed = false;
+DATA.rows.forEach((r, i) => {
+  if (r.corrected) anyFixed = true;
+  const li = document.createElement("li");
+  li.className = r.distress ? "distress" : "";
+  li.dataset.i = i;
+  li.innerHTML =
+    '<div class="inner">' +
+      '<div class="play"><svg viewBox="0 0 10 10"><path d="M0 0l10 5-10 5z"/></svg></div>' +
+      '<div class="body">' +
+        '<div class="meta">' +
+          '<span class="clock">' + r.clock + '</span>' +
+          '<span class="off">+' + r.offset + 's</span>' +
+          '<span>' + esc(r.ch) + '</span>' +
+          '<span>' + r.dur.toFixed(1) + 's</span>' +
+          (r.q != null ? '<span>' + r.q + '%</span>' : '') +
+          (r.corrected ? '<span class="tag fix">corrected</span>' : '') +
+        '</div>' +
+        '<div class="text">' + esc(r.text) + '</div>' +
+        (r.orig ? '<div class="orig"><b>As decoded</b>' + esc(r.orig) + '</div>' : '') +
+      '</div>' +
+    '</div><div class="prog"></div>';
+  li.addEventListener("click", () => { chain = false; toggle(i); });
+  list.appendChild(li);
+});
+
+const items = [...list.children];
+document.getElementById("note").textContent =
+  anyFixed
+    ? "Transcripts marked “corrected” were edited by hand; the machine decode is kept and can be shown above."
+    : "Transcripts are produced by speech recognition and are sometimes wrong. The audio is the record.";
+
+if (anyFixed) {
+  const b = document.getElementById("fix");
+  b.hidden = false;
+  b.addEventListener("click", () => {
+    const on = items.some(li => li.classList.contains("showorig"));
+    items.forEach(li => li.classList.toggle("showorig", !on));
+    b.textContent = on ? "Show original transcripts" : "Hide original transcripts";
+  });
+}
+
+function stop(){
+  au.pause();
+  items.forEach(li => { li.classList.remove("on");
+                        li.querySelector(".prog").style.width = "0"; });
+  cur = -1;
+}
+function play(i){
+  if (i < 0 || i >= items.length) { stop(); return; }
+  stop();
+  cur = i;
+  items[i].classList.add("on");
+  items[i].scrollIntoView({block:"nearest", behavior:"smooth"});
+  au.src = DATA.rows[i].wav;
+  au.play().catch(() => {
+    items[i].querySelector(".text").insertAdjacentHTML("afterend",
+      '<div class="orig" style="display:block;border-color:var(--red)">' +
+      '<b style="color:var(--red)">Audio not found</b>' +
+      esc(DATA.rows[i].wav) + ' is not in this folder.</div>');
+  });
+}
+function toggle(i){ if (cur === i) stop(); else play(i); }
+
+au.addEventListener("timeupdate", () => {
+  if (cur < 0 || !au.duration) return;
+  items[cur].querySelector(".prog").style.width =
+    (100 * au.currentTime / au.duration) + "%";
+});
+au.addEventListener("ended", () => {
+  const next = cur + 1;
+  stop();
+  if (chain && next < items.length) play(next);
+});
+
+document.getElementById("all").addEventListener("click", () => {
+  if (chain && cur >= 0) { chain = false; stop(); }
+  else { chain = true; play(0); }
+});
+
+document.addEventListener("keydown", e => {
+  if (e.key === " ") { e.preventDefault(); chain = false; toggle(cur < 0 ? 0 : cur); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); chain = false; play(Math.min(cur + 1, items.length - 1)); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); chain = false; play(Math.max(cur - 1, 0)); }
+  else if (e.key === "Escape") stop();
+});
+</script>
+</body>
+</html>
+"""
 
 
 def _multi_entry(row, audio_file, stem):
@@ -3332,6 +3628,11 @@ WEB_DEFAULTS = {
     # its own schedule (thermal_history_days); turning the report off leaves
     # both running, so the history is there if the page is ever wanted back.
     "thermal_report": True,
+
+    # Usage logging. See the access log section for why this is
+    # folded into sessions rather than kept per request.
+    "access_log": True,
+    "access_log_days": 90,
 }
 
 
@@ -4741,8 +5042,510 @@ def page_html():
     # the next page load.
     link = ('<a href="/report">Thermal report</a>'
             if thermal_report_on() else "")
+    if access_log_on():
+        link += ' <a href="/usage">Usage</a>'
+
     return (PAGE.replace("{{STATION}}", name)
                 .replace("{{THERMAL_LINK}}", link))
+
+
+# ===========================================================================
+# Access log
+# ===========================================================================
+# WHY THIS IS NOT ONE ROW PER REQUEST
+#
+# The log page polls /api/messages every three seconds. One browser tab left
+# open is about 29,000 requests a day, so a row per request would cost a
+# gigabyte or two a year on the SD card AND bury the thing actually being
+# asked -- who is using this -- under polling noise from a tab nobody is
+# looking at.
+#
+# So requests are folded into SESSIONS: one row per client, extended in place
+# while they keep asking, rolled over after ACCESS_GAP_S of silence. A poll
+# bumps a counter. Page views, downloads and audio fetches are also kept
+# individually, because those are deliberate acts and there are few of them.
+#
+# The log lives in its own database. The receiver writes to watchkeeper.db
+# continuously and must never wait on a web request -- Data._conn() is
+# read-only for the same reason.
+
+ACCESS_GAP_S = 1800.0           # 30 min of silence starts a new session
+
+ACCESS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+    id        INTEGER PRIMARY KEY,
+    client    TEXT NOT NULL,
+    ua        TEXT NOT NULL,
+    via       TEXT,
+    host      TEXT,
+    first_t   REAL NOT NULL,
+    last_t    REAL NOT NULL,
+    reqs      INTEGER NOT NULL DEFAULT 0,
+    pages     INTEGER NOT NULL DEFAULT 0,
+    bytes     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS sessions_last ON sessions(last_t);
+CREATE INDEX IF NOT EXISTS sessions_client ON sessions(client, ua, last_t);
+
+CREATE TABLE IF NOT EXISTS views (
+    id        INTEGER PRIMARY KEY,
+    t         REAL NOT NULL,
+    client    TEXT,
+    via       TEXT,
+    host      TEXT,
+    method    TEXT,
+    path      TEXT,
+    status    INTEGER,
+    bytes     INTEGER,
+    ms        REAL,
+    kind      TEXT
+);
+CREATE INDEX IF NOT EXISTS views_t ON views(t);
+
+-- WHY A SEPARATE DAILY TABLE
+--
+-- "How many unique addresses today" cannot be read off sessions without
+-- getting it wrong at the edges. A tab left open overnight is ONE session
+-- spanning two days, so counting by first_t loses it from the second day
+-- and counting by last_t loses it from the first. Counting distinct clients
+-- in a window is not the same question either -- one client over seven days
+-- is one, not seven.
+--
+-- So each request also stamps a (day, client) row. The day is the local
+-- calendar date at the time of the request, computed in Python rather than
+-- by SQLite, so it follows the Pi's own clock and DST without an argument
+-- about timezone strings. Unique-per-day is then a COUNT(*) per day, exact
+-- by construction, at one upsert per request.
+--
+-- via is the route last used that day: a client that reaches the same box
+-- over the LAN in the morning and the funnel in the evening shows as funnel.
+CREATE TABLE IF NOT EXISTS daily (
+    day       TEXT NOT NULL,          -- local YYYY-MM-DD
+    client    TEXT NOT NULL,
+    via       TEXT,
+    first_t   REAL NOT NULL,
+    last_t    REAL NOT NULL,
+    reqs      INTEGER NOT NULL DEFAULT 0,
+    pages     INTEGER NOT NULL DEFAULT 0,
+    bytes     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, client)
+);
+CREATE INDEX IF NOT EXISTS daily_day ON daily(day);
+
+-- Aliases. Deliberately NOT pruned with the rest: a name costs nothing to
+-- keep and is the one thing here that cannot be reconstructed.
+CREATE TABLE IF NOT EXISTS names (
+    client    TEXT PRIMARY KEY,
+    label     TEXT NOT NULL,
+    noted_at  REAL NOT NULL
+);
+"""
+
+_TS_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _as_ip(s):
+    try:
+        return ipaddress.ip_address((s or "").strip())
+    except ValueError:
+        return None
+
+
+def classify_via(peer, forwarded, host):
+    """How this request reached us. Best effort, from what is observable.
+
+    Tailscale terminates TLS for serve and funnel and proxies to localhost,
+    so for those the socket peer is loopback and the real client arrives in
+    X-Forwarded-For. A tailnet client that reached us directly keeps its
+    100.64.0.0/10 address, which Python counts as private -- hence the CGNAT
+    test before the private one, or every tailnet hit would read as LAN.
+    """
+    p = _as_ip(peer)
+    c = _as_ip(forwarded) or p
+    h = (host or "").lower()
+
+    if c is not None and c.version == 4 and c in _TS_CGNAT:
+        return "tailnet"
+    if ".ts.net" in h:
+        # Tailscale served it. Forwarded from outside the tailnet means the
+        # public funnel; otherwise it is a tailnet peer.
+        return "funnel" if forwarded else "tailnet"
+    if p is not None and p.is_loopback and forwarded:
+        return "funnel"
+    if c is None:
+        return "unknown"
+    if c.is_loopback:
+        return "local"
+    if c.is_private:
+        return "lan"
+    return "internet"
+
+
+def access_kind(path):
+    p = (path or "/").partition("?")[0]
+    if p.startswith("/api/"):
+        return "api"
+    if p.startswith("/audio/"):
+        return "audio"
+    if p.endswith(".zip") or p.startswith("/download"):
+        return "download"
+    if p.startswith("/brief") or p in ("/", "/search", "/export", "/report",
+                                       "/docs", "/usage"):
+        return "page"
+    return "other"
+
+
+class AccessLog:
+    """Usage, in its own database, written from the response path."""
+
+    def __init__(self, path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._con = None
+        self._pruned = 0.0
+
+    def _conn(self):
+        if self._con is None:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self._con = sqlite3.connect(self.path, check_same_thread=False,
+                                        timeout=5.0)
+            self._con.execute("PRAGMA journal_mode=WAL")
+            # NORMAL rather than FULL: usage statistics are not worth an
+            # fsync per request on an SD card, and losing the last few on a
+            # hard power cut costs nothing.
+            self._con.execute("PRAGMA synchronous=NORMAL")
+            self._con.executescript(ACCESS_SCHEMA)
+            self._con.commit()
+        return self._con
+
+    def record(self, client, peer, via, host, method, path, status,
+               nbytes, ms, ua, kind):
+        now = time.time()
+        with self._lock:
+            c = self._conn()
+            row = c.execute(
+                "SELECT id, last_t FROM sessions WHERE client=? AND ua=? "
+                "ORDER BY last_t DESC LIMIT 1", (client, ua)).fetchone()
+            page = 1 if kind in ("page", "download") else 0
+            if row and (now - row[1]) <= ACCESS_GAP_S:
+                c.execute(
+                    "UPDATE sessions SET last_t=?, reqs=reqs+1, pages=pages+?,"
+                    " bytes=bytes+?, host=?, via=? WHERE id=?",
+                    (now, page, nbytes or 0, host, via, row[0]))
+            else:
+                c.execute(
+                    "INSERT INTO sessions (client, ua, via, host, first_t,"
+                    " last_t, reqs, pages, bytes) VALUES (?,?,?,?,?,?,1,?,?)",
+                    (client, ua, via, host, now, now, page, nbytes or 0))
+            day = time.strftime("%Y-%m-%d", time.localtime(now))
+            c.execute(
+                "INSERT INTO daily (day, client, via, first_t, last_t, reqs,"
+                " pages, bytes) VALUES (?,?,?,?,?,1,?,?)"
+                " ON CONFLICT(day, client) DO UPDATE SET"
+                " last_t=excluded.last_t, via=excluded.via,"
+                " reqs=daily.reqs+1, pages=daily.pages+excluded.pages,"
+                " bytes=daily.bytes+excluded.bytes",
+                (day, client, via, now, now, page, nbytes or 0))
+            if kind != "api":
+                c.execute(
+                    "INSERT INTO views (t, client, via, host, method, path,"
+                    " status, bytes, ms, kind) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (now, client, via, host, method, path, status,
+                     nbytes or 0, ms, kind))
+            c.commit()
+            if now - self._pruned > 3600:
+                self._pruned = now
+                self._prune(c, now)
+
+    def _prune(self, c, now):
+        days = float(web_config().get("access_log_days", 90) or 0)
+        if days <= 0:
+            return
+        cut = now - days * 86400.0
+        c.execute("DELETE FROM sessions WHERE last_t < ?", (cut,))
+        c.execute("DELETE FROM views WHERE t < ?", (cut,))
+        # names are not pruned -- see the schema
+        c.execute("DELETE FROM daily WHERE day < ?",
+                  (time.strftime("%Y-%m-%d", time.localtime(cut)),))
+        c.commit()
+
+    # -- naming --------------------------------------------------------
+    def set_name(self, client, label):
+        """Alias an address. Empty label removes it.
+
+        An address is a rough handle for a person, and how rough depends
+        entirely on the route -- see the note on the page itself.
+        """
+        client = (client or "").strip()[:64]
+        label = (label or "").strip()[:60]
+        if not client:
+            raise ValueError("no client")
+        with self._lock:
+            c = self._conn()
+            if label:
+                c.execute("INSERT INTO names (client, label, noted_at)"
+                          " VALUES (?,?,?) ON CONFLICT(client) DO UPDATE SET"
+                          " label=excluded.label, noted_at=excluded.noted_at",
+                          (client, label, time.time()))
+            else:
+                c.execute("DELETE FROM names WHERE client=?", (client,))
+            c.commit()
+        return label
+
+    def names(self):
+        with self._lock:
+            return {k: v for k, v in
+                    self._conn().execute("SELECT client, label FROM names")}
+
+    # -- reading -------------------------------------------------------
+    def summary(self, days=7):
+        c = self._conn()
+        cut = time.time() - days * 86400.0
+        cut_day = time.strftime("%Y-%m-%d", time.localtime(cut))
+        out = {"days": days}
+        with self._lock:
+            out["clients"] = c.execute(
+                "SELECT COUNT(DISTINCT client) FROM sessions WHERE last_t>=?",
+                (cut,)).fetchone()[0]
+            out["sessions"] = c.execute(
+                "SELECT COUNT(*) FROM sessions WHERE last_t>=?",
+                (cut,)).fetchone()[0]
+            r = c.execute(
+                "SELECT COALESCE(SUM(reqs),0), COALESCE(SUM(pages),0),"
+                " COALESCE(SUM(bytes),0) FROM sessions WHERE last_t>=?",
+                (cut,)).fetchone()
+            out["requests"], out["pages"], out["bytes"] = r
+            out["by_via"] = [
+                {"via": v, "sessions": n, "clients": k, "requests": q}
+                for v, n, k, q in c.execute(
+                    "SELECT via, COUNT(*), COUNT(DISTINCT client),"
+                    " COALESCE(SUM(reqs),0) FROM sessions WHERE last_t>=?"
+                    " GROUP BY via ORDER BY COUNT(*) DESC", (cut,))]
+            out["by_host"] = [
+                {"host": h or "(none)", "sessions": n, "clients": k}
+                for h, n, k in c.execute(
+                    "SELECT host, COUNT(*), COUNT(DISTINCT client) FROM"
+                    " sessions WHERE last_t>=? GROUP BY host"
+                    " ORDER BY COUNT(*) DESC LIMIT 12", (cut,))]
+            out["clients_detail"] = [
+                {"client": cl, "via": v, "sessions": n, "requests": q,
+                 "pages": pg, "bytes": by, "first": f, "last": l, "ua": ua}
+                for cl, v, n, q, pg, by, f, l, ua in c.execute(
+                    "SELECT client, via, COUNT(*), COALESCE(SUM(reqs),0),"
+                    " COALESCE(SUM(pages),0), COALESCE(SUM(bytes),0),"
+                    " MIN(first_t), MAX(last_t),"
+                    " (SELECT ua FROM sessions s2 WHERE s2.client=s1.client"
+                    "  ORDER BY last_t DESC LIMIT 1)"
+                    " FROM sessions s1 WHERE last_t>=? GROUP BY client"
+                    " ORDER BY MAX(last_t) DESC LIMIT 100", (cut,))]
+            out["sessions_recent"] = [
+                {"client": cl, "via": v, "host": h, "first": f, "last": l,
+                 "reqs": q, "pages": pg, "bytes": by, "ua": ua}
+                for cl, v, h, f, l, q, pg, by, ua in c.execute(
+                    "SELECT client, via, host, first_t, last_t, reqs, pages,"
+                    " bytes, ua FROM sessions WHERE last_t>=?"
+                    " ORDER BY last_t DESC LIMIT 60", (cut,))]
+            out["views_recent"] = [
+                {"t": t, "client": cl, "via": v, "path": p, "status": st,
+                 "kind": k}
+                for t, cl, v, p, st, k in c.execute(
+                    "SELECT t, client, via, path, status, kind FROM views"
+                    " WHERE t>=? ORDER BY t DESC LIMIT 120", (cut,))]
+            # Exact unique-per-day, plus who was new that day. "New" is
+            # measured against everything still in the table, so a client
+            # last seen before the retention window reads as new again.
+            out["by_day"] = [
+                {"day": d, "clients": k, "new": nw, "requests": q,
+                 "pages": pg, "bytes": by}
+                for d, k, nw, q, pg, by in c.execute(
+                    "SELECT day, COUNT(*),"
+                    " SUM(CASE WHEN day = (SELECT MIN(d2.day) FROM daily d2"
+                    "   WHERE d2.client = daily.client) THEN 1 ELSE 0 END),"
+                    " COALESCE(SUM(reqs),0), COALESCE(SUM(pages),0),"
+                    " COALESCE(SUM(bytes),0)"
+                    " FROM daily WHERE day >= ? GROUP BY day"
+                    " ORDER BY day DESC", (cut_day,))]
+            routes = {}
+            for d, v, k in c.execute(
+                    "SELECT day, via, COUNT(*) FROM daily WHERE day >= ?"
+                    " GROUP BY day, via", (cut_day,)):
+                routes.setdefault(d, {})[v or "?"] = k
+            for row in out["by_day"]:
+                row["routes"] = routes.get(row["day"], {})
+            out["names"] = {k: v for k, v in
+                            c.execute("SELECT client, label FROM names")}
+            out["top_paths"] = [
+                {"path": p, "n": n}
+                for p, n in c.execute(
+                    "SELECT path, COUNT(*) FROM views WHERE t>=?"
+                    " GROUP BY path ORDER BY COUNT(*) DESC LIMIT 15", (cut,))]
+        return out
+
+
+_ACCESS = None
+
+
+def access_log():
+    global _ACCESS
+    if _ACCESS is None:
+        _ACCESS = AccessLog(os.path.join(wk.BASE_DIR, "access.db"))
+    return _ACCESS
+
+
+def access_log_on():
+    return bool(web_config().get("access_log", True))
+
+USAGE = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage</title>
+<style>
+ :root{--bg:#0d1518;--panel:#152026;--panel2:#19272e;--line:#24353d;
+       --text:#dce7ea;--muted:#8299a2;--accent:#7FB2C4;--warn:#C9A227}
+ *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);
+   font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+ .wrap{max-width:1040px;margin:0 auto;padding:24px 16px 70px}
+ h1{font-size:19px;margin:0 0 3px} h2{font-size:14px;margin:26px 0 9px;
+   color:var(--muted);text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+ a{color:var(--accent)} .sub{color:var(--muted);font-size:13px}
+ .cards{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0 4px}
+ .card{flex:1 1 128px;background:var(--panel);border:1px solid var(--line);
+   border-radius:9px;padding:12px 14px}
+ .card b{display:block;font-size:23px;font-weight:600;font-variant-numeric:tabular-nums}
+ .card span{color:var(--muted);font-size:12px}
+ table{width:100%;border-collapse:collapse;background:var(--panel);
+   border:1px solid var(--line);border-radius:9px;overflow:hidden}
+ th,td{text-align:left;padding:7px 11px;border-bottom:1px solid var(--line);
+   font-size:13px;vertical-align:top}
+ th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;
+   letter-spacing:.5px;background:var(--panel2)}
+ tr:last-child td{border-bottom:0}
+ td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+ .via{font-size:11px;border:1px solid var(--line);border-radius:4px;
+   padding:1px 6px;white-space:nowrap}
+ .via.funnel{border-color:var(--warn);color:var(--warn)}
+ .via.internet{border-color:#d8453f;color:#d8453f}
+ .via.tailnet{border-color:var(--accent);color:var(--accent)}
+ .ua{color:var(--muted);font-size:11.5px;word-break:break-word}
+ .bar{display:flex;gap:8px;align-items:center;margin:14px 0}
+ select{font:inherit;background:var(--panel2);color:var(--text);
+   border:1px solid var(--line);border-radius:6px;padding:5px 9px}
+ input.nm{font:inherit;font-size:13px;width:11em;background:transparent;
+   color:var(--text);border:1px solid transparent;border-radius:5px;
+   padding:2px 5px}
+ input.nm:hover{border-color:var(--line)}
+ input.nm:focus{outline:0;border-color:var(--accent);background:var(--panel2)}
+ input.nm::placeholder{color:#55666e}
+ .note{color:var(--muted);font-size:12px;margin:6px 0 0;max-width:72ch}
+ .lbl{color:var(--accent)}
+</style></head><body><div class="wrap">
+<h1>Usage</h1>
+<div class="sub"><a href="/">&larr; back to the log</a></div>
+<div class="bar">
+  <label class="sub" for="d">Window</label>
+  <select id="d">
+    <option value="1">last 24 hours</option>
+    <option value="7" selected>last 7 days</option>
+    <option value="30">last 30 days</option>
+    <option value="90">last 90 days</option>
+  </select>
+</div>
+<div id="out"></div>
+</div>
+<script>
+const out = document.getElementById("out"), sel = document.getElementById("d");
+const esc = s => (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const when = t => new Date(t*1000).toLocaleString();
+const ago = t => { const s=Math.max(0,Date.now()/1000-t);
+  if(s<90) return Math.round(s)+"s ago";
+  if(s<5400) return Math.round(s/60)+"m ago";
+  if(s<172800) return Math.round(s/3600)+"h ago";
+  return Math.round(s/86400)+"d ago"; };
+const kb = b => b>=1048576 ? (b/1048576).toFixed(1)+" MB"
+                : b>=1024 ? Math.round(b/1024)+" kB" : (b||0)+" B";
+const via = v => '<span class="via '+esc(v)+'">'+esc(v||"?")+'</span>';
+let NAMES = {};
+// An aliased address shows the name; the address stays visible underneath,
+// because the name is a guess about a person and the address is the fact.
+const who = c => NAMES[c]
+  ? '<span class="lbl">'+esc(NAMES[c])+'</span><div class="ua">'+esc(c)+'</div>'
+  : esc(c);
+const nameBox = c => '<input class="nm" data-c="'+esc(c)+'" value="'+
+  esc(NAMES[c]||"")+'" placeholder="name&hellip;" spellcheck="false">';
+async function rename(client, label){
+  await fetch("/api/usage/name", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({client:client, label:label})});
+}
+function tbl(head, rows){
+  if(!rows.length) return '<div class="sub">nothing yet</div>';
+  return '<table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+
+    rows.map(r=>'<tr>'+r.map(c=>'<td'+(typeof c==='number'?' class="n"':'')+'>'+
+      (typeof c==='number'? c.toLocaleString() : c)+'</td>').join('')+'</tr>').join('')+'</table>';
+}
+async function load(){
+  out.innerHTML = '<div class="sub">loading&hellip;</div>';
+  const d = await (await fetch("/api/usage?days="+sel.value)).json();
+  if(d.error){ out.innerHTML='<div class="sub">'+esc(d.error)+'</div>'; return; }
+  NAMES = d.names || {};
+  let h = '<div class="cards">'+
+    [["clients",d.clients],["sessions",d.sessions],["requests",d.requests],
+     ["page views",d.pages],["served",kb(d.bytes)]]
+    .map(([k,v])=>'<div class="card"><b>'+(typeof v==="number"?v.toLocaleString():v)+
+                  '</b><span>'+k+'</span></div>').join('')+'</div>';
+
+  const routes = o => Object.keys(o||{}).sort((a,b)=>o[b]-o[a])
+    .map(k=>via(k)+' '+o[k]).join(' ');
+  h += '<h2>By day</h2>' + tbl(["Day","Unique addresses","New","Routes","Requests","Pages","Served"],
+    d.by_day.map(r=>[esc(r.day), r.clients, r.new, routes(r.routes),
+      r.requests, r.pages, kb(r.bytes)]));
+
+  h += '<h2>How they reached it</h2>' + tbl(["Route","Clients","Sessions","Requests"],
+    d.by_via.map(r=>[via(r.via), r.clients, r.sessions, r.requests]));
+
+  h += '<h2>Address they asked for</h2>' + tbl(["Host","Clients","Sessions"],
+    d.by_host.map(r=>[esc(r.host), r.clients, r.sessions]));
+
+  h += '<h2>Clients</h2>' + tbl(["Name","Address","Route","Sessions","Requests","Pages","Served","First seen","Last seen"],
+    d.clients_detail.map(r=>[nameBox(r.client),
+      esc(r.client)+'<div class="ua">'+esc((r.ua||"").slice(0,90))+'</div>',
+      via(r.via), r.sessions, r.requests, r.pages, kb(r.bytes),
+      when(r.first), ago(r.last)])) +
+    '<p class="note">Type a name to label an address; it is used everywhere ' +
+    'on this page and kept when old traffic is pruned. How well an address ' +
+    'identifies a person depends on the route: a <span class="via tailnet">' +
+    'tailnet</span> address is assigned per device and effectively ' +
+    'permanent, a <span class="via lan">lan</span> address can move when ' +
+    'DHCP reassigns it, and a <span class="via funnel">funnel</span> or ' +
+    '<span class="via internet">internet</span> address changes on its own ' +
+    'as a phone moves between networks, so a name there is a label for one ' +
+    'visit rather than one person.</p>'
+
+
+  h += '<h2>Recent sessions</h2>' + tbl(["Started","Client","Route","Host","Requests","Pages","Last"],
+    d.sessions_recent.map(r=>[when(r.first), who(r.client), via(r.via),
+      esc(r.host||""), r.reqs, r.pages, ago(r.last)]));
+
+  h += '<h2>Recent page views</h2>' + tbl(["When","Client","Route","Path","Status"],
+    d.views_recent.map(r=>[when(r.t), who(r.client), via(r.via), esc(r.path), r.status]));
+
+  h += '<h2>Most requested</h2>' + tbl(["Path","Views"],
+    d.top_paths.map(r=>[esc(r.path), r.n]));
+  out.innerHTML = h;
+  // change fires on blur or Enter, so one reload per edit, not per keystroke.
+  out.querySelectorAll("input.nm").forEach(el => {
+    el.addEventListener("change", async () => {
+      el.disabled = true;
+      try { await rename(el.dataset.c, el.value.trim()); } finally { load(); }
+    });
+    el.addEventListener("keydown", e => {
+      if(e.key === "Escape"){ el.value = NAMES[el.dataset.c] || ""; el.blur(); }
+    });
+  });
+}
+sel.addEventListener("change", load); load();
+</script></body></html>
+"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -4755,6 +5558,32 @@ class Handler(BaseHTTPRequestHandler):
             super().handle()
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def handle_one_request(self):
+        self._t0 = time.time()
+        super().handle_one_request()
+
+    def _note_access(self, code, nbytes):
+        """Record the request. Never allowed to affect the response."""
+        try:
+            if not access_log_on():
+                return
+            fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0]
+            fwd = fwd.strip() or None
+            peer = self.client_address[0] if self.client_address else ""
+            host = self.headers.get("Host") or ""
+            path = self.path or "/"
+            access_log().record(
+                client=(fwd or peer), peer=peer,
+                via=classify_via(peer, fwd, host), host=host,
+                method=self.command or "", path=path, status=code,
+                nbytes=nbytes,
+                ms=round((time.time() - getattr(self, "_t0", time.time()))
+                         * 1000.0, 1),
+                ua=(self.headers.get("User-Agent") or "")[:240],
+                kind=access_kind(path))
+        except Exception as exc:                        # noqa: BLE001
+            log.debug("access log: %s", exc)
 
     def log_message(self, fmt, *args):
         log.debug("%s - %s", self.address_string(), fmt % args)
@@ -4807,18 +5636,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+        self._note_access(code, len(body))
 
     def do_HEAD(self):
         self.do_GET()
 
     def do_POST(self):
-        """Only the brief, and only as POST.
+        """POST-only: running the brief, and naming an address.
 
         A run costs money and minutes, so it must not be reachable by anything
         that follows links speculatively -- a browser prefetch, a link
         checker, a chat client unfurling a URL.
         """
         path = self.path.split("?", 1)[0]
+        if path == "/api/usage/name":
+            if not access_log_on():
+                self._send(404, b'{"error":"usage logging is switched off"}',
+                           "application/json")
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("expected an object")
+                label = access_log().set_name(body.get("client"),
+                                              body.get("label"))
+            except (ValueError, TypeError) as exc:
+                self._send(400, json.dumps({"error": str(exc)}).encode(),
+                           "application/json")
+                return
+            self._send(200, json.dumps({"label": label}).encode(),
+                       "application/json")
+            return
+
         if path == "/api/brief/run":
             host = self.headers.get("Host") or ""
             base = ("http://" + host) if host else ""
@@ -5058,6 +5908,33 @@ class Handler(BaseHTTPRequestHandler):
             rec["has_prompt"] = bool(rec.pop("prompt", None))
             rec.pop("traffic_offset", None)
             self._send(200, json.dumps(rec).encode(), "application/json")
+            return
+
+        if path == "/usage":
+            if not access_log_on():
+                self._send(404, b"usage logging is switched off "
+                                b"(set access_log = true under [web] "
+                                b"in watchkeeper.toml)",
+                           "text/plain; charset=utf-8")
+                return
+            self._send(200, USAGE.encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+
+        if path == "/api/usage":
+            if not access_log_on():
+                self._send(404, b'{"error":"usage logging is switched off"}',
+                           "application/json")
+                return
+            q = urllib.parse.parse_qs(self.path.partition("?")[2])
+            try:
+                days = max(1, min(365, int((q.get("days") or ["7"])[0])))
+            except ValueError:
+                days = 7
+            self._send(200,
+                       json.dumps(access_log().summary(days),
+                                  default=str).encode("utf-8"),
+                       "application/json")
             return
 
         if path == "/report":
@@ -5418,7 +6295,8 @@ class Handler(BaseHTTPRequestHandler):
 
         now = datetime.now(timezone.utc)
         manifest = {
-            "station": wk.STATION_NAME,
+            # Not STATION_NAME: this file leaves the boat.
+            "station": "Radio Log",
             "generated_at": now.isoformat(timespec="seconds"),
             "requested": len(ids),
             "included": len(picked),
@@ -5446,6 +6324,13 @@ class Handler(BaseHTTPRequestHandler):
             # telemetry and the adjudicated positions in one parseable file.
             z.writestr("summary.json",
                        json.dumps(manifest, indent=1, default=str))
+            # The player, built from the manifest that was just completed.
+            # Last, and never fatal: a zip without it is still the archive
+            # the user asked for.
+            try:
+                z.writestr("transcript.html", build_index(manifest))
+            except Exception as exc:                        # noqa: BLE001
+                log.warning("multi-download: no transcript.html (%s)", exc)
 
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
         self._send(200, buf.getvalue(), "application/zip",

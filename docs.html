@@ -1349,6 +1349,39 @@ a loop.</p>
 journal, with each crop&rsquo;s word count and what pass&nbsp;1 said, so a
 recovery can be checked rather than taken on trust.</p>
 
+<div class="note">
+  <b>What a day of it actually did</b>
+  <p>Measured over the first 24 hours: <strong>23 re-rolls out of 1,265
+  transcribed messages, 1.8% of traffic</strong>. Every one was raised by the
+  sparse trigger. The proword and ends-mid-broadcast triggers fired
+  <strong>zero</strong> times &mdash; the failure this was built for did not
+  recur in a day, which is worth knowing before reading much into any single
+  week.</p>
+  <table>
+    <tr><th>Readability</th><th>Re-rolls that <em>extended</em> pass 1</th></tr>
+    <tr><td>q &ge; 70</td><td><strong>80%</strong> (8 of 10)</td></tr>
+    <tr><td>q &lt; 70</td><td><strong>8%</strong> (1 of 13)</td></tr>
+  </table>
+  <p>On a strong signal a re-roll generally does what it is meant to:
+  <em>&ldquo;I can.&rdquo;</em> became <em>&ldquo;Uh risky boat you can push a
+  little bit on the stern. I can&rdquo;</em>. On marginal audio it mostly
+  replaces one reading with a differently-shaped one of similar length &mdash;
+  <em>&ldquo;Firefly, 4&rdquo;</em> became <em>&ldquo;Start flag,
+  point&rdquo;</em> &mdash; because when the audio carries little, each crop
+  hears something different and the longest wins.</p>
+  <p>That is tolerable rather than ideal, and the reason is the readability
+  slider: the substitutions land below q70, where the log already hides them
+  unless you go looking. It does mean the score now carries a second meaning.
+  It used to say how much to trust a transcript; it also says how much a
+  re-roll is likely to improve one.</p>
+  <p>Note that word count rewards verbosity as well as recovery.
+  <code>310-521-3805</code> re-rolled to <em>&ldquo;Three one zero five two one
+  three eight zero five&rdquo;</em> and scored as a 1.7&times; gain &mdash; the
+  same information, spelled out, and less useful to read. Nothing prevents
+  that, and nothing needs to: a margin tight enough to catch it would also
+  reject real recoveries.</p>
+</div>
+
 <h3 id="prowords">5.8 Prowords, and why there is no phrase filter</h3>
 
 <p>The normalisers below run on the finished transcript, whichever engine
@@ -2038,7 +2071,16 @@ alongside the programs so they travel with the rest of the software.</p>
           permanent <code>history</code> table, the <code>thermal</code>
           series, and <code>corrections</code> &mdash;
           <a href="#correcting">transcripts typed by hand</a>, which is the
-          one table the web interface writes.</td></tr>
+          one table in <em>this</em> database the web interface writes. Usage
+          is kept apart, in <code>access.db</code> below.</td></tr>
+  <tr><td><code>~/watchkeeper/access.db</code></td>
+      <td>SQLite, WAL mode. <a href="#usagepage">Who has been using the
+          interface</a> &mdash; <code>sessions</code>, the per-day
+          <code>daily</code> stamps, individual <code>views</code>, and the
+          <code>names</code> given to addresses. Separate from the log on
+          purpose: the receiver must never wait on a web request. Pruned on
+          <code>access_log_days</code>; absent entirely until the first
+          request if <code>access_log</code> is false.</td></tr>
   <tr><td><code>~/watchkeeper/audio/</code></td>
       <td>One WAV per message. <strong>On tmpfs — see below.</strong></td></tr>
   <tr><td><code>~/wx_corpus/</code></td>
@@ -2309,6 +2351,16 @@ tuner's DC spike lands in empty spectrum.</p>
           <strong>Thermal report</strong> link from the header and makes both
           <code>/report</code> and <code>/api/thermal</code> answer 404.
           See <a href="#thermalopt">10</a>.</td></tr>
+  <tr><td><code>access_log</code></td>
+      <td><code>true</code> by default. <code>false</code> removes the
+          <strong>Usage</strong> link, makes <code>/usage</code> and both
+          usage endpoints answer 404, and stops the recording itself &mdash;
+          unlike <code>thermal_report</code>, which only hides its page.
+          Anything already recorded is left alone. See
+          <a href="#usagepage">10</a>.</td></tr>
+  <tr><td><code>access_log_days</code></td>
+      <td><code>90</code> by default. How long usage traffic is kept;
+          <code>0</code> keeps it indefinitely. Names are never pruned.</td></tr>
 </table>
 
 <p>Read by <code>webui.py</code> on each request rather than at startup, so an
@@ -2444,6 +2496,9 @@ compressed; over a metered uplink the difference is roughly 35&nbsp;GB a day
 against 6 for a single open tab. Audio is excluded, as are partial
 (206) responses, because compressing a byte range breaks playback.</p>
 
+<p>That same polling rate is why <a href="#usagepage">usage</a> is recorded as
+sessions rather than as one row per request.</p>
+
 <h3 id="searchpage">Search &mdash; /search</h3>
 <p>Finds text across every transcript in the permanent <code>history</code>
 table, not just the recordings still in the live log. Terms are combined with
@@ -2569,7 +2624,8 @@ and which filter did it.</p>
 checkbox, in the same cell, so the layout does not shift. Tick the
 transmissions that make up an exchange and <strong>Download&nbsp;(n)</strong>
 returns one zip: a WAV and a text note per message, as the single download
-produces, plus <code>summary.json</code>.</p>
+produces, plus <code>summary.json</code> and
+<a href="#transcripthtml"><code>transcript.html</code></a>.</p>
 
 <p>The manifest is what makes it an archive rather than a folder of WAVs. Per
 message it carries the channel, frequency, timestamp, duration, SNR,
@@ -2604,6 +2660,68 @@ behave in ways worth knowing:</p>
 figure rather than truncating. The zip is built in memory, and on this machine
 memory is the thing most worth protecting &mdash; see
 <a href="#encmem">5.7.1</a>.</p>
+
+<h3 id="transcripthtml">The zip's own player &mdash; transcript.html</h3>
+
+<p>A folder of WAVs and text files is an archive, not something anyone can
+read. <code>transcript.html</code> sits beside them: extract the zip, open the
+page, and the exchange plays back in order with its transcripts. It needs no
+server, no network and nothing installed.</p>
+
+<p>Each row carries the station-local time, an offset from the first
+transmission, the channel, duration and readability, and the transcript.
+Clicking a row plays that recording, with a progress bar beneath it.
+<strong>Play all in sequence</strong> runs the whole exchange end to end,
+advancing automatically &mdash; which is what turns a 48-minute rescue into
+something a person listens to rather than scrubs through. Space plays and
+pauses, the arrow keys move, Escape stops.</p>
+
+<p>Corrected transcripts are marked, and <strong>Show original transcripts</strong>
+reveals what the decoder actually said beneath each one. Rows from a channel
+marked <code>distress</code> carry a red edge, as they do in the log.</p>
+
+<p>Two constraints decided the design, and both are load-bearing:</p>
+
+<table>
+  <tr><th>Constraint</th><th>Consequence</th></tr>
+  <tr><td>The page opens from <code>file://</code></td>
+      <td>Browsers block <code>fetch()</code> at that origin, so the page
+          <strong>cannot read <code>summary.json</code></strong>. The data is
+          embedded when the zip is built. The manifest still ships for anything
+          that wants to parse it, but the page does not depend on it &mdash;
+          and editing the JSON afterwards will not change the page.</td></tr>
+  <tr><td>The recordings sit beside it</td>
+      <td>They are <em>referenced</em>, not inlined as base64. A 350&nbsp;kB
+          clip stays a 350&nbsp;kB file, the page stays about 11&nbsp;kB and
+          opens instantly, and the zip does not grow. The cost is that the
+          page only works with its folder: moved on its own, every row reports
+          its recording missing rather than failing silently.</td></tr>
+</table>
+
+<p>Times are the <strong>station's</strong> local time, taken from the filename
+the receiver wrote rather than converted in the browser. An incident happened
+at a place, and someone reading the export in another timezone wants to know
+when it happened there.</p>
+
+<p>Writing the page is wrapped and logged, never fatal. If it fails, the zip
+is still the archive that was asked for, minus the player: a download that
+failed because its convenience failed would be the wrong trade for something
+being kept.</p>
+
+<div class="note">
+  <b>Nothing in the zip carries the vessel name</b>
+  <p>This export exists to be handed to other people &mdash; a marina, an
+  insurer, the Coast Guard &mdash; so the station name is written as
+  <code>Radio Log</code> in all three places it used to appear: the page
+  header, <code>summary.json</code>, and the first line of every text note.
+  The rest of a note is channel, frequency, readability, gain and spectrum,
+  none of which identifies the vessel.</p>
+  <p>The <a href="#briefexport">brief export</a> is <strong>not</strong>
+  share-safe and is deliberately left alone. Its <code>prompt.txt</code>
+  contains the position the vessel was at when the brief ran. Renaming the
+  station there would make it look safe while the position sat two files
+  away, which is worse than it plainly not being safe.</p>
+</div>
 
 <h3 id="correcting">Correcting a transcript &mdash; Correct text</h3>
 
@@ -3159,6 +3277,128 @@ in this. The page shows the reason: a key that was not found, an HTTP status
 from the endpoint with its body, an unreachable host, or no matching traffic
 at all, which is the usual one after a quiet night with
 <code>min_quality=55</code> in force.</p>
+
+<h3 id="usagepage">Who is using it &mdash; /usage</h3>
+
+<p>The log gets handed around: a tailnet link to someone aboard, a funnel
+address to someone who is not. <code>/usage</code> answers who actually opened
+it, by what route, and when. Its header link is present only when
+<code>access_log</code> is true under <code>[web]</code>, and is removed
+rather than greyed out for the same reason as the
+<a href="#thermalopt">thermal report</a>.</p>
+
+<h4>Why it is not one row per request</h4>
+
+<p>The live log polls every three seconds. One tab left open is about
+29,000&nbsp;requests a day, so a row per request would cost a gigabyte or two
+a year on the card <em>and</em> bury the question being asked &mdash; who is
+using this &mdash; under polling noise from a tab nobody is looking at.</p>
+
+<p>Requests fold into <strong>sessions</strong> instead: one row per address
+and browser, extended in place while they keep asking, rolled over after
+thirty minutes of silence. A poll bumps a counter and writes nothing else.
+Page views, downloads and audio fetches are <em>also</em> kept individually,
+because those are deliberate acts and there are few of them &mdash; a hundred
+a week against a hundred thousand polls.</p>
+
+<h4>Unique addresses per day</h4>
+
+<p>That count cannot be read off the sessions without getting it wrong at the
+edges. A tab left open overnight is <em>one</em> session spanning two days, so
+counting it by the time it started loses it from the second day and counting
+it by the time it ended loses it from the first. Nor is &ldquo;distinct
+addresses in the last seven days&rdquo; the same question: one person over a
+week is one, not seven.</p>
+
+<p>So every request also stamps a <code>(day,&nbsp;address)</code> row, which
+makes the daily figure a count of rows &mdash; exact by construction, at one
+upsert per request. The day is the local calendar date, computed from the
+Pi's own clock rather than by SQLite, so it follows the box's timezone and
+DST without an argument about date strings.</p>
+
+<p>The <strong>New</strong> column counts addresses whose first appearance
+anywhere in the table is that day. It is measured against what is still
+stored, so an address last seen before the retention window reads as new
+again when it comes back.</p>
+
+<h4>How they reached it</h4>
+
+<p>Every session and view records the route, because it is what the address is
+worth knowing for.</p>
+
+<table>
+  <tr><th>Route</th><th>What it means</th></tr>
+  <tr><td><code>local</code></td>
+      <td>Loopback with nothing forwarded: the Pi asking itself.</td></tr>
+  <tr><td><code>lan</code></td>
+      <td>A private address &mdash; the boat's own network.</td></tr>
+  <tr><td><code>tailnet</code></td>
+      <td>A tailnet peer, reaching the box directly over Tailscale.</td></tr>
+  <tr><td><code>funnel</code></td>
+      <td>The public funnel: someone outside the tailnet, with their own
+          address carried in <code>X-Forwarded-For</code>.</td></tr>
+  <tr><td><code>internet</code></td>
+      <td>A public address that did <em>not</em> arrive through the funnel
+          &mdash; a port forward, or the box being more exposed than
+          intended. Worth noticing if it appears and should not have.</td></tr>
+  <tr><td><code>unknown</code></td>
+      <td>No address could be read from the connection at all.</td></tr>
+</table>
+
+<p>Tailscale terminates TLS for both <em>serve</em> and <em>funnel</em> and
+proxies to loopback, so for those the socket's peer is the Pi itself and the
+real client arrives in <code>X-Forwarded-For</code>. A tailnet client that
+reached the box directly keeps its own <code>100.64.0.0/10</code> address,
+which Python's <code>ipaddress</code> counts as private &mdash; so that test
+runs <em>before</em> the private one, or every tailnet visit would be filed as
+LAN. The <code>Host</code> header is kept too, which is how the same visit is
+also attributable to the name it was asked for.</p>
+
+<h4>Naming an address</h4>
+
+<p>The <strong>Name</strong> column on the Clients table is editable: type a
+label and it is used everywhere on the page from then on, with the address
+still shown underneath it. Names are deliberately <em>not</em> pruned with the
+traffic &mdash; a name costs nothing to keep and is the one thing here that
+cannot be reconstructed later.</p>
+
+<p>How much a name means depends entirely on the route it was given for:</p>
+
+<ul>
+  <li><strong>tailnet</strong> &mdash; assigned per device and effectively
+      permanent. A name here is reliable.</li>
+  <li><strong>lan</strong> &mdash; stable in practice, but DHCP can reassign
+      it, and then the name is on the wrong device.</li>
+  <li><strong>funnel</strong> and <strong>internet</strong> &mdash; a phone
+      changes address as it changes network. A name here labels one visit,
+      not one person.</li>
+</ul>
+
+<p>The same caution is printed under the table on the page itself, so it is
+in front of whoever is typing the name rather than only in here.</p>
+
+<h4>Where it is kept</h4>
+
+<p>In its own database, <code>~/watchkeeper/access.db</code>, not in
+<code>watchkeeper.db</code>. The receiver writes to that one continuously and
+must never wait on a web request &mdash; which is the same reason the web
+interface opens it read-only. Journalling is WAL with
+<code>synchronous=NORMAL</code>: usage figures are not worth an fsync per
+request on an SD card, and losing the last few on a hard power cut costs
+nothing.</p>
+
+<p>Traffic older than <code>access_log_days</code> is dropped, at most once an
+hour, on whichever request happens to be in hand. Recording is wrapped so that
+a failure can never affect the response: if the log cannot be written the
+request is served anyway and the reason goes to the journal at debug level.</p>
+
+<p>Two endpoints back the page. <code>/api/usage?days=N</code> returns the
+whole summary as JSON. <code>POST /api/usage/name</code> takes
+<code>{"client": &hellip;, "label": &hellip;}</code> and sets or, with an
+empty label, clears a name &mdash; the second unauthenticated write on the
+interface after <a href="#correcting">corrections</a>, and resting on the same
+reasoning: the box is reachable only by people who were given the address, and
+every write is itself logged.</p>
 
 <!-- ========================================================= -->
 <h2 id="admin">11. Routine administration</h2>

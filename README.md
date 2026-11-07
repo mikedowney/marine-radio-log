@@ -49,6 +49,9 @@ keeping a watch on 16.
   discarding the real words around them.
 - **A thermal report**, because on a Pi this is a thermal problem as much as a
   radio one. See below.
+- **A usage log**, for when you have handed the link to other people: unique
+  addresses per day, how each one reached the box, and names you can put to
+  them. See [who is using it](#seeing-who-has-used-it).
 - **Works offline.** The page has no webfonts and no CDN links, because a boat
   at anchor has no connectivity. One optional feature is the exception, and it
   says so loudly: see [the AI brief](#the-ai-brief-optional-and-not-offline).
@@ -446,8 +449,30 @@ address and the text it replaced.
 ### Taking messages away
 
 **Download multi** replaces the per-row download icons with checkboxes. Tick
-what you want and you get one zip: the WAV and a text file for each clip, plus
-a `summary.json` describing the selection.
+what you want and you get one zip: the WAV and a text file for each clip, a
+`summary.json` describing the selection, and a `transcript.html` that makes the
+whole thing readable.
+
+![An exported exchange: 94 transmissions of an overboard rescue, played back in order](docs/transcript_export.jpg)
+
+Extract the folder, open the page, and the exchange plays back in order with
+its transcripts. **Play all in sequence** runs it end to end, which is what
+turns 48 minutes of a rescue into something you listen to rather than scrub
+through. Corrected transcripts are marked, with the original decode one click
+away. No server, no network, nothing installed.
+
+Two things about it are deliberate. The page **cannot read `summary.json`** —
+browsers block `fetch()` at `file://`, so the data is embedded when the zip is
+built; the manifest still ships for anything that wants to parse it. And the
+recordings are *referenced*, not inlined, so a 350 KB clip stays a file and the
+page stays around 11 KB. The cost is that the page only works alongside its
+folder.
+
+Nothing in the zip carries the vessel name — it reads `Radio Log` in the page
+header, in `summary.json` and in every text note — because this is the export
+you hand to a marina or an insurer. The AI brief export is **not** share-safe
+and is left alone deliberately: its `prompt.txt` holds the position the vessel
+was at when the brief ran.
 
 ### The JSON export
 
@@ -456,6 +481,40 @@ a `summary.json` describing the selection.
 The form writes the query string for you and shows how many messages match
 before you commit to downloading them. The URL it builds is a plain GET — copy
 it and the same export runs from `curl` or a cron job.
+
+### Seeing who has used it
+
+Once you give the link to anyone else, `/usage` answers who opened it, by what
+route, and when. It records addresses and request metadata only — never what
+was read, and it never leaves the Pi.
+
+The live log polls every three seconds, so one tab left open is about 29,000
+requests a day. A row per request would cost a gigabyte a year on the card and
+bury the answer under polling noise, so requests fold into **sessions**: one
+row per address, rolled over after thirty minutes of silence, with page views
+and downloads kept individually because there are few of them and each one is
+deliberate.
+
+Unique-addresses-per-day gets its own `(day, address)` stamp rather than being
+derived from those sessions, because a tab left open across midnight is one
+session but two days, and no query over sessions gets that right at both ends.
+
+Each visit is classified by how it arrived — `lan`, `tailnet`, `funnel`,
+`internet`, `local` — which is what makes the address worth anything. Tailscale
+terminates TLS and proxies to loopback, so the real client comes from
+`X-Forwarded-For`; a direct tailnet peer keeps its `100.64.0.0/10` address,
+which Python counts as private, so that test has to run first or every tailnet
+visit reads as LAN.
+
+You can put a name to an address, and the page tells you how much that name is
+worth: a tailnet address is per-device and effectively permanent, a LAN address
+can move with DHCP, and a funnel address changes as a phone changes network —
+so a name there labels one visit, not one person.
+
+It lives in its own database (`access.db`), because the receiver writes to the
+log continuously and must never wait on a web request. Traffic older than
+`access_log_days` is dropped; names are kept. Turn the whole thing off with
+`access_log = false` under `[web]`.
 
 ---
 
