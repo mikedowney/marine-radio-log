@@ -16,6 +16,7 @@ to load on a boat with no connectivity, so there are no webfonts or CDN links.
 """
 
 import argparse
+import csv
 import html
 import gzip
 import json
@@ -3575,11 +3576,23 @@ AI_DEFAULTS = {
     "prompt_file": "brief_prompt.txt",
     "brief_dir": "",     # blank: <base_dir>/briefs
     "keep_briefs": 30,
-    "export_query": ("channel=16,22a&hours=24&text=1"
-                     "&min_quality=55&min_duration=3"),
+    # No channel= term, which both ends read as "every channel": the API
+    # leaves the filter unset, and the brief page selects all of them when
+    # the configured list is empty. Narrowing to 16 and 22A missed enough
+    # that was worth reading on the working channels to be worth the tokens.
+    "export_query": "hours=24&text=1&min_quality=55&min_duration=3",
     "base_url": "",      # blank: whatever host the browser used
     "max_messages": 1200,
     "fields": [],        # blank: BRIEF_FIELDS below
+    # What a run costs, in dollars per million tokens, for the figure shown
+    # on the brief. Both zero hides the cost: there is no sensible universal
+    # default -- providers price differently, rates change, and a stale
+    # number presented as money is worse than none. Input and output are
+    # priced separately by every provider worth using, and the token counts
+    # are recorded separately, so this is arithmetic rather than a guess.
+    "price_in_per_mtok": 0.0,
+    "price_out_per_mtok": 0.0,
+
     # Gemini only. Grounding costs a round trip to Google before the model
     # answers, which is worth it for weather and not for radio traffic.
     "google_search": False,
@@ -3628,6 +3641,22 @@ WEB_DEFAULTS = {
     # its own schedule (thermal_history_days); turning the report off leaves
     # both running, so the history is there if the page is ever wanted back.
     "thermal_report": True,
+
+    # Where to find a DB-IP Lite city database for the usage page, if you
+    # want city and country beside each address. Empty means
+    # ~/watchkeeper/dbip-city-lite.mmdb. The lookup is local: nothing about
+    # who visits this box is sent anywhere. Opened once at first use, so a
+    # change here needs a restart of the web service.
+    "geo_db": "",
+
+    # Whether the public funnel may change anything. False means
+    # corrections, address names and brief runs answer 403 unless the
+    # request came from loopback, the LAN or the tailnet; reading is
+    # untouched. False by default: the funnel hostname is in public
+    # certificate logs, so "nobody knows the address" was never true.
+    # Set it true if you run funnel-only and accept that anyone who finds
+    # the host can write.
+    "funnel_writes": False,
 
     # Usage logging. See the access log section for why this is
     # folded into sessions rather than kept per request.
@@ -4111,6 +4140,44 @@ def _chat_gemini(cfg, key, prompt):
     return text, {k: v for k, v in usage.items() if v is not None}
 
 
+def price_brief(cfg, usage):
+    """Add cost_usd to a usage dict, using the rates configured right now.
+
+    Stored with the brief rather than computed when the page renders it, so
+    editing the rates later does not silently restate what an old run cost.
+    The rates travel with it for the same reason: a figure in dollars should
+    be able to say what it was derived from.
+    """
+    if not isinstance(usage, dict):
+        return usage
+    try:
+        pin = float(cfg.get("price_in_per_mtok") or 0)
+        pout = float(cfg.get("price_out_per_mtok") or 0)
+    except (TypeError, ValueError):
+        return usage
+    if pin <= 0 and pout <= 0:
+        return usage
+    pt = usage.get("prompt_tokens") or 0
+    ct = usage.get("completion_tokens") or 0
+    if not pt and not ct:
+        return usage
+    out = dict(usage)
+    out["cost_usd"] = round((pt * pin + ct * pout) / 1000000.0, 6)
+    out["rates_per_mtok"] = {"in": pin, "out": pout}
+    return out
+
+
+def fmt_cost(c):
+    """A brief costs fractions of a cent, so two decimals would read $0.00."""
+    try:
+        c = float(c)
+    except (TypeError, ValueError):
+        return None
+    if c <= 0:
+        return None
+    return "$%.4f" % c if c < 1 else "$%.2f" % c
+
+
 def _chat(cfg, key, prompt):
     """One blocking call. Returns (content, usage)."""
     if provider_of(cfg) == "gemini":
@@ -4324,7 +4391,7 @@ class BriefRunner:
                 "messages": len(msgs),
                 "total": export.get("total"),
                 "elapsed_s": round(time.time() - self.status()["started"], 1),
-                "usage": usage,
+                "usage": price_brief(cfg, usage),
                 "base_url": site,
                 "html": html_body,
                 # Kept so a brief can be exported, argued with and compared
@@ -4489,6 +4556,10 @@ def brief_doc(rec):
     usage = rec.get("usage") or {}
     if isinstance(usage, dict) and usage.get("total_tokens"):
         bits.append("%s tokens" % format(usage["total_tokens"], ","))
+    if isinstance(usage, dict):
+        cost = fmt_cost(usage.get("cost_usd"))
+        if cost:
+            bits.append(cost)
     foot = ("Exported from %s. The report is the model's; the traffic it was "
             "given is in traffic.json and the prompt in prompt.txt."
             % html.escape(wk.STATION_NAME or "Radio Log"))
@@ -4972,6 +5043,13 @@ function load(id) {
       if (b.usage && b.usage.total_tokens) {
         bits.push(b.usage.total_tokens.toLocaleString() + " tokens");
       }
+      // Absent until price_in_per_mtok / price_out_per_mtok are set under
+      // [ai]. Four decimals because a brief costs fractions of a cent and
+      // two would render every run as $0.00.
+      if (b.usage && b.usage.cost_usd > 0) {
+        bits.push("$" + (b.usage.cost_usd < 1
+          ? b.usage.cost_usd.toFixed(4) : b.usage.cost_usd.toFixed(2)));
+      }
       el("meta").innerHTML = bits.join(" &middot; ") +
         "<br>Position used: " + escapeHtml(b.position || "unknown");
       el("meta").style.display = "";
@@ -5168,8 +5246,11 @@ def classify_via(peer, forwarded, host):
         return "tailnet"
     if ".ts.net" in h:
         # Tailscale served it. Forwarded from outside the tailnet means the
-        # public funnel; otherwise it is a tailnet peer.
-        return "funnel" if forwarded else "tailnet"
+        # public funnel. With no forwarded address at all we genuinely do
+        # not know which it was, and "unknown" is the honest answer -- it
+        # is also not a route that may write. Saying "tailnet" here would
+        # hand the benefit of the doubt to whoever we can see least.
+        return "funnel" if forwarded else "unknown"
     if p is not None and p.is_loopback and forwarded:
         return "funnel"
     if c is None:
@@ -5379,6 +5460,22 @@ class AccessLog:
                 for p, n in c.execute(
                     "SELECT path, COUNT(*) FROM views WHERE t>=?"
                     " GROUP BY path ORDER BY COUNT(*) DESC LIMIT 15", (cut,))]
+
+            # Person or machine, and where from. Done here rather than in
+            # the page so the CSV export carries the same verdict the page
+            # shows, and so the reasoning lives in one place.
+            probed = probed_clients(c, cut)
+            kinds = {}
+            for row in out["clients_detail"]:
+                cl = row["client"]
+                kind, why = classify_client(
+                    row.get("ua"), row["pages"], row["bytes"],
+                    out["names"].get(cl), probed.get(cl))
+                kinds[cl] = {"kind": kind, "why": why}
+                row["country"], row["city"] = geo_for(cl)
+            out["kinds"] = kinds
+            _geo_reader()
+            out["geo_note"] = _GEO["note"]
         return out
 
 
@@ -5394,6 +5491,197 @@ def access_log():
 
 def access_log_on():
     return bool(web_config().get("access_log", True))
+
+# ---------------------------------------------------------------------------
+# Person or machine
+# ---------------------------------------------------------------------------
+# None of this is certain, so every verdict carries the reason it was reached
+# and the page shows that on hover. A name always wins: if you have put a
+# label on an address you know something this cannot.
+#
+# The strongest signal is what was ASKED FOR. A scanner announces itself by
+# requesting /.env, /.git/config or /wp-login.php -- paths that do not exist
+# here and that no browser would ever construct on its own. Only requests
+# that were ANSWERED 4xx count, so a real path that happens to match the
+# pattern is never held against anyone.
+_BOT_UA = re.compile(
+    r"https?://|\bbot\b|\bcrawler\b|\bspider\b|\bscan(?:ner)?\b|"
+    r"curl/|wget|python-|libwww|go-http|okhttp|headless", re.I)
+
+_PROBE_LIKE = (
+    "%/.env", "%.env", "%/.git/%", "%/.svn/%", "%/.hg/%", "%/.aws/%",
+    "%phpinfo%", "%.php", "%wp-admin%", "%wp-login%", "%credentials%",
+    "%service-account%", "%key.json", "%keyfile%", "%server-status%",
+    "%/admin%", "%.json",
+)
+
+
+def probed_clients(con, cut):
+    """{client: (how many probes, one example)} for the window."""
+    like = " OR ".join("path LIKE ?" for _ in _PROBE_LIKE)
+    return {cl: (n, p) for cl, n, p in con.execute(
+        "SELECT client, COUNT(*), MIN(path) FROM views"
+        " WHERE t>=? AND status>=400 AND (" + like + ")"
+        " GROUP BY client", (cut,) + _PROBE_LIKE)}
+
+
+def classify_client(ua, pages, nbytes, named, probe):
+    """("person"|"bot", why). The why is the point: it is only ever a guess."""
+    if named:
+        return "person", "you gave it a name"
+    if probe:
+        n, path = probe
+        if n == 1:
+            return "bot", "asked for %s, which does not exist here" % path
+        return "bot", ("asked for %s and %d other paths that do not exist here"
+                       % (path, n - 1))
+    ua = (ua or "").strip()
+    if not ua:
+        return "bot", "sent no user agent at all"
+    if _BOT_UA.search(ua):
+        return "bot", "the user agent names a tool or advertises a scanner"
+    if pages == 0 and nbytes < 2048:
+        return "bot", ("never loaded a page -- %d bytes in total, which is an "
+                       "error response and nothing else" % nbytes)
+    if pages == 0:
+        return "person", "no page load, but %s of content fetched" % (
+            "%.0f kB" % (nbytes / 1024.0))
+    return "person", "loaded %d page%s" % (pages, "" if pages == 1 else "s")
+
+
+# ---------------------------------------------------------------------------
+# Where an address is, roughly
+# ---------------------------------------------------------------------------
+# From a local DB-IP Lite database, so nothing about who visits this box is
+# sent anywhere to find out. Absent is a normal state, not a fault: the
+# columns read "--" and the page says how to turn them on.
+#
+# Country is dependable. City is not, for the addresses you most want it
+# for: a phone on a carrier resolves to wherever that carrier hands off
+# traffic, which can be a different state entirely. For hosting providers it
+# is accurate, because the machine really is there.
+_GEO = {"reader": None, "tried": False, "cache": {}, "note": ""}
+
+
+def _geo_reader():
+    if not _GEO["tried"]:
+        _GEO["tried"] = True
+        path = os.path.expanduser(str(
+            web_config().get("geo_db")
+            or os.path.join(wk.BASE_DIR, "dbip-city-lite.mmdb")))
+        try:
+            import maxminddb
+            _GEO["reader"] = maxminddb.open_database(path)
+            log.info("geolocation from %s", path)
+        except ImportError:
+            _GEO["note"] = ("City and country are off: the maxminddb package "
+                            "is not installed.")
+        except OSError:
+            _GEO["note"] = ("City and country are off: no database at %s"
+                            % path)
+        except Exception as exc:                        # noqa: BLE001
+            _GEO["note"] = "City and country are off: %s" % exc
+        if _GEO["note"]:
+            log.info("%s", _GEO["note"])
+    return _GEO["reader"]
+
+
+def geo_for(ip):
+    """(country, city) or (None, None). Reads a local file; makes no request."""
+    hit = _GEO["cache"].get(ip)
+    if hit is not None:
+        return hit
+    out = (None, None)
+    try:
+        a = _as_ip(ip)
+        # Private, loopback and tailnet addresses have no geography worth
+        # reporting: they are this boat, or this boat's own overlay network.
+        if (a is not None and not a.is_private and not a.is_loopback
+                and not (a.version == 4 and a in _TS_CGNAT)):
+            r = _geo_reader()
+            if r is not None:
+                rec = r.get(ip) or {}
+                out = (((rec.get("country") or {}).get("names") or {}).get("en"),
+                       ((rec.get("city") or {}).get("names") or {}).get("en"))
+    except Exception as exc:                            # noqa: BLE001
+        log.debug("geo %s: %s", ip, exc)
+    if len(_GEO["cache"]) > 4096:
+        _GEO["cache"].clear()
+    _GEO["cache"][ip] = out
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
+# Written through the csv module rather than by joining commas, because a
+# user agent contains commas and a name someone typed can contain anything.
+def _iso(t):
+    try:
+        return datetime.fromtimestamp(float(t)).isoformat(timespec="seconds")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _nm(r, d):
+    return d.get("names", {}).get(r["client"], "")
+
+
+def _kd(r, d, f):
+    return (d.get("kinds", {}).get(r["client"]) or {}).get(f, "")
+
+
+USAGE_CSV = {
+    "daily": ("by_day", [
+        ("day", lambda r, d: r["day"]),
+        ("unique_addresses", lambda r, d: r["clients"]),
+        ("new_addresses", lambda r, d: r["new"]),
+        ("routes", lambda r, d: " ".join(
+            "%s=%s" % kv for kv in sorted((r.get("routes") or {}).items()))),
+        ("requests", lambda r, d: r["requests"]),
+        ("pages", lambda r, d: r["pages"]),
+        ("bytes", lambda r, d: r["bytes"]),
+    ]),
+    "clients": ("clients_detail", [
+        ("name", _nm),
+        ("address", lambda r, d: r["client"]),
+        ("kind", lambda r, d: _kd(r, d, "kind")),
+        ("why", lambda r, d: _kd(r, d, "why")),
+        ("country", lambda r, d: r.get("country") or ""),
+        ("city", lambda r, d: r.get("city") or ""),
+        ("route", lambda r, d: r["via"]),
+        ("sessions", lambda r, d: r["sessions"]),
+        ("requests", lambda r, d: r["requests"]),
+        ("pages", lambda r, d: r["pages"]),
+        ("bytes", lambda r, d: r["bytes"]),
+        ("first_seen", lambda r, d: _iso(r["first"])),
+        ("last_seen", lambda r, d: _iso(r["last"])),
+        ("user_agent", lambda r, d: r.get("ua") or ""),
+    ]),
+    "sessions": ("sessions_recent", [
+        ("started", lambda r, d: _iso(r["first"])),
+        ("last_seen", lambda r, d: _iso(r["last"])),
+        ("name", _nm),
+        ("address", lambda r, d: r["client"]),
+        ("kind", lambda r, d: _kd(r, d, "kind")),
+        ("route", lambda r, d: r["via"]),
+        ("host", lambda r, d: r.get("host") or ""),
+        ("requests", lambda r, d: r["reqs"]),
+        ("pages", lambda r, d: r["pages"]),
+        ("bytes", lambda r, d: r["bytes"]),
+        ("user_agent", lambda r, d: r.get("ua") or ""),
+    ]),
+    "views": ("views_recent", [
+        ("when", lambda r, d: _iso(r["t"])),
+        ("name", _nm),
+        ("address", lambda r, d: r["client"]),
+        ("kind", lambda r, d: _kd(r, d, "kind")),
+        ("route", lambda r, d: r["via"]),
+        ("path", lambda r, d: r["path"]),
+        ("status", lambda r, d: r["status"]),
+    ]),
+}
+
 
 USAGE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -5438,6 +5726,24 @@ USAGE = r"""<!DOCTYPE html>
  input.nm::placeholder{color:#55666e}
  .note{color:var(--muted);font-size:12px;margin:6px 0 0;max-width:72ch}
  .lbl{color:var(--accent)}
+ th.s{cursor:pointer;user-select:none;white-space:nowrap}
+ th.s:hover{color:var(--text)}
+ th.s.on{color:var(--text)}
+ .sh{display:flex;align-items:baseline;gap:10px;margin:22px 0 0}
+ .sh h2{margin:0}
+ .exp{font-size:11.5px;color:var(--muted);text-decoration:none;
+   border:1px solid var(--line);border-radius:5px;padding:2px 7px}
+ .exp:hover{color:var(--text);border-color:var(--muted)}
+ .kind{font-size:10.5px;letter-spacing:.04em;border-radius:3px;
+   padding:1px 6px;white-space:nowrap;border:1px solid}
+ .kind.person{color:#7FB2C4;border-color:#2f5663}
+ .kind.bot{color:#C08A6A;border-color:#5c4132}
+ .geo{color:var(--muted);font-size:12px;white-space:nowrap}
+ /* A user agent is 90 characters of boilerplate around the four that
+    matter. Left to wrap it made every client row six lines tall and
+    pushed the numbers off the screen; the full string is in the title. */
+ td .ua{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+   max-width:30ch;word-break:normal}
 </style></head><body><div class="wrap">
 <h1>Usage</h1>
 <div class="sub"><a href="/">&larr; back to the log</a></div>
@@ -5449,22 +5755,32 @@ USAGE = r"""<!DOCTYPE html>
     <option value="30">last 30 days</option>
     <option value="90">last 90 days</option>
   </select>
+  <label class="sub" for="k">Show</label>
+  <select id="k">
+    <option value="all" selected>everyone</option>
+    <option value="person">people only</option>
+    <option value="bot">bots only</option>
+  </select>
+  <a class="exp" id="dlAll" href="#">All as JSON</a>
 </div>
 <div id="out"></div>
 </div>
 <script>
 const out = document.getElementById("out"), sel = document.getElementById("d");
-const esc = s => (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const kSel = document.getElementById("k"), dlAll = document.getElementById("dlAll");
+const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const when = t => new Date(t*1000).toLocaleString();
 const ago = t => { const s=Math.max(0,Date.now()/1000-t);
-  if(s<90) return Math.round(s)+"s ago";
-  if(s<5400) return Math.round(s/60)+"m ago";
-  if(s<172800) return Math.round(s/3600)+"h ago";
-  return Math.round(s/86400)+"d ago"; };
+  return s<90 ? Math.round(s)+"s ago"
+       : s<5400 ? Math.round(s/60)+"m ago"
+       : s<172800 ? Math.round(s/3600)+"h ago"
+       : Math.round(s/86400)+"d ago"; };
 const kb = b => b>=1048576 ? (b/1048576).toFixed(1)+" MB"
-                : b>=1024 ? Math.round(b/1024)+" kB" : (b||0)+" B";
+       : b>=1024 ? Math.round(b/1024)+" kB" : b+" B";
 const via = v => '<span class="via '+esc(v)+'">'+esc(v||"?")+'</span>';
-let NAMES = {};
+
+let D = null, NAMES = {}, KIND = {}, sorts = {};
+
 // An aliased address shows the name; the address stays visible underneath,
 // because the name is a guess about a person and the address is the fact.
 const who = c => NAMES[c]
@@ -5473,66 +5789,165 @@ const who = c => NAMES[c]
 const nameBox = c => '<input class="nm" data-c="'+esc(c)+'" value="'+
   esc(NAMES[c]||"")+'" placeholder="name&hellip;" spellcheck="false">';
 async function rename(client, label){
-  await fetch("/api/usage/name", {method:"POST",
+  const r = await fetch("/api/usage/name", {method:"POST",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({client:client, label:label})});
+  if(!r.ok) alert("Not saved: " + ((await r.json().catch(()=>({}))).error
+                                   || ("HTTP " + r.status)));
 }
-function tbl(head, rows){
-  if(!rows.length) return '<div class="sub">nothing yet</div>';
-  return '<table><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+
-    rows.map(r=>'<tr>'+r.map(c=>'<td'+(typeof c==='number'?' class="n"':'')+'>'+
-      (typeof c==='number'? c.toLocaleString() : c)+'</td>').join('')+'</tr>').join('')+'</table>';
+
+const kindTag = c => {
+  const k = KIND[c] || {kind:"person", why:""};
+  return '<span class="kind '+k.kind+'" title="'+esc(k.why)+'">'
+       + k.kind + '</span>';
+};
+const place = r => {
+  if(!r.country && !r.city) return '<span class="geo">&mdash;</span>';
+  return '<span class="geo">'+esc([r.city, r.country].filter(Boolean).join(", "))+'</span>';
+};
+
+// Which clients the Show filter lets through. Sessions and page views are
+// filtered by the same verdict as the client they belong to, so switching
+// to "people only" takes the scanner noise out of every table at once.
+const keep = c => {
+  const want = kSel.value;
+  if(want === "all") return true;
+  return ((KIND[c] || {}).kind || "person") === want;
+};
+
+// One sortable table. Columns carry both a sort value and a formatter, so
+// "Served" sorts by bytes while reading as MB, and "Last seen" sorts by the
+// timestamp while reading as "3h ago" -- sorting the rendered text would
+// put 9 B above 5.9 MB and 2d ago above 15m ago.
+function table(id, cols, rows, def){
+  const st = sorts[id] || (sorts[id] = {k: def[0], dir: def[1]});
+  const col = cols.find(c => c.k === st.k) || cols[0];
+  const sorted = rows.slice().sort((a,b) => {
+    const x = col.v(a), y = col.v(b);
+    if(x === y) return 0;
+    if(x === null || x === undefined) return 1;
+    if(y === null || y === undefined) return -1;
+    return (x > y ? 1 : -1) * st.dir;
+  });
+  let h = '<table><tr>';
+  for(const c of cols){
+    const on = c.k === st.k;
+    h += '<th class="s'+(on?' on':'')+'" data-t="'+id+'" data-k="'+c.k+'">'
+       + esc(c.t) + (on ? (st.dir > 0 ? ' ▲' : ' ▼') : '') + '</th>';
+  }
+  h += '</tr>';
+  for(const r of sorted) h += '<tr>' + cols.map(c => '<td>'+c.f(r)+'</td>').join('') + '</tr>';
+  return h + '</table>';
 }
+
+function sect(title, id, cols, rows, exportable, def){
+  return '<div class="sh"><h2>'+esc(title)+'</h2>'
+       + (exportable ? '<a class="exp" href="/api/usage/export?table='+id
+            +'&days='+encodeURIComponent(sel.value)+'">CSV</a>' : '')
+       + '</div>' + table(id, cols, rows, def);
+}
+
+const N = (k, t, f) => ({k:k, t:t, n:true, v:r=>r[k], f:f||(r=>r[k])});
+
 async function load(){
   out.innerHTML = '<div class="sub">loading&hellip;</div>';
   const d = await (await fetch("/api/usage?days="+sel.value)).json();
   if(d.error){ out.innerHTML='<div class="sub">'+esc(d.error)+'</div>'; return; }
+  D = d;
   NAMES = d.names || {};
-  let h = '<div class="cards">'+
-    [["clients",d.clients],["sessions",d.sessions],["requests",d.requests],
-     ["page views",d.pages],["served",kb(d.bytes)]]
-    .map(([k,v])=>'<div class="card"><b>'+(typeof v==="number"?v.toLocaleString():v)+
-                  '</b><span>'+k+'</span></div>').join('')+'</div>';
+  KIND = d.kinds || {};
+  dlAll.href = "/api/usage/export?format=json&days=" + encodeURIComponent(sel.value);
+  draw();
+}
+
+function draw(){
+  const d = D;
+  const people = d.clients_detail.filter(r => keep(r.client));
+  let h = '<div class="cards">'
+    + card(d.clients, "clients") + card(d.sessions, "sessions")
+    + card(d.requests.toLocaleString(), "requests")
+    + card(d.pages, "page views") + card(kb(d.bytes), "served") + '</div>';
 
   const routes = o => Object.keys(o||{}).sort((a,b)=>o[b]-o[a])
-    .map(k=>via(k)+' '+o[k]).join(' ');
-  h += '<h2>By day</h2>' + tbl(["Day","Unique addresses","New","Routes","Requests","Pages","Served"],
-    d.by_day.map(r=>[esc(r.day), r.clients, r.new, routes(r.routes),
-      r.requests, r.pages, kb(r.bytes)]));
+    .map(k => via(k)+' '+o[k]).join(' ');
 
-  h += '<h2>How they reached it</h2>' + tbl(["Route","Clients","Sessions","Requests"],
-    d.by_via.map(r=>[via(r.via), r.clients, r.sessions, r.requests]));
+  h += sect("By day", "daily", [
+    {k:"day", t:"Day", v:r=>r.day, f:r=>esc(r.day)},
+    N("clients","Unique addresses"), N("new","New"),
+    {k:"routes", t:"Routes", v:r=>r.clients, f:r=>routes(r.routes)},
+    N("requests","Requests", r=>r.requests.toLocaleString()),
+    N("pages","Pages"), N("bytes","Served", r=>kb(r.bytes)),
+  ], d.by_day, true, ["day", -1]);
 
-  h += '<h2>Address they asked for</h2>' + tbl(["Host","Clients","Sessions"],
-    d.by_host.map(r=>[esc(r.host), r.clients, r.sessions]));
+  h += sect("How they reached it", "via", [
+    {k:"via", t:"Route", v:r=>r.via, f:r=>via(r.via)},
+    N("clients","Clients"), N("sessions","Sessions"), N("requests","Requests"),
+  ], d.by_via, false, ["requests", -1]);
 
-  h += '<h2>Clients</h2>' + tbl(["Name","Address","Route","Sessions","Requests","Pages","Served","First seen","Last seen"],
-    d.clients_detail.map(r=>[nameBox(r.client),
-      esc(r.client)+'<div class="ua">'+esc((r.ua||"").slice(0,90))+'</div>',
-      via(r.via), r.sessions, r.requests, r.pages, kb(r.bytes),
-      when(r.first), ago(r.last)])) +
-    '<p class="note">Type a name to label an address; it is used everywhere ' +
-    'on this page and kept when old traffic is pruned. How well an address ' +
-    'identifies a person depends on the route: a <span class="via tailnet">' +
-    'tailnet</span> address is assigned per device and effectively ' +
-    'permanent, a <span class="via lan">lan</span> address can move when ' +
-    'DHCP reassigns it, and a <span class="via funnel">funnel</span> or ' +
-    '<span class="via internet">internet</span> address changes on its own ' +
-    'as a phone moves between networks, so a name there is a label for one ' +
-    'visit rather than one person.</p>'
+  h += sect("Address they asked for", "host", [
+    {k:"host", t:"Host", v:r=>r.host, f:r=>esc(r.host)},
+    N("clients","Clients"), N("sessions","Sessions"),
+  ], d.by_host, false, ["sessions", -1]);
 
+  h += sect("Clients", "clients", [
+    {k:"name", t:"Name", v:r=>(NAMES[r.client]||"~"), f:r=>nameBox(r.client)},
+    {k:"client", t:"Address", v:r=>r.client,
+     f:r=>esc(r.client)+'<div class="ua" title="'+esc(r.ua||"")+'">'
+        + esc(r.ua||"") + '</div>'},
+    {k:"kind", t:"Kind", v:r=>(KIND[r.client]||{}).kind||"", f:r=>kindTag(r.client)},
+    {k:"where", t:"Where", v:r=>(r.country||"")+(r.city||""), f:place},
+    {k:"via", t:"Route", v:r=>r.via, f:r=>via(r.via)},
+    N("sessions","Sessions"), N("requests","Requests", r=>r.requests.toLocaleString()),
+    N("pages","Pages"), N("bytes","Served", r=>kb(r.bytes)),
+    N("first","First seen", r=>when(r.first)), N("last","Last seen", r=>ago(r.last)),
+  ], people, true, ["last", -1]);
 
-  h += '<h2>Recent sessions</h2>' + tbl(["Started","Client","Route","Host","Requests","Pages","Last"],
-    d.sessions_recent.map(r=>[when(r.first), who(r.client), via(r.via),
-      esc(r.host||""), r.reqs, r.pages, ago(r.last)]));
+  h += '<p class="note">Type a name to label an address; it is used everywhere '
+    + 'on this page and kept when old traffic is pruned. How well an address '
+    + 'identifies a person depends on the route: a <span class="via tailnet">'
+    + 'tailnet</span> address is assigned per device and effectively permanent, '
+    + 'a <span class="via lan">lan</span> address can move when DHCP reassigns '
+    + 'it, and a <span class="via funnel">funnel</span> or <span class="via '
+    + 'internet">internet</span> address changes on its own as a phone moves '
+    + 'between networks, so a name there is a label for one visit rather than '
+    + 'one person. Naming an address marks it as a person: the guess under '
+    + '<b>Kind</b> is only ever a guess, and hovering it says what it was based '
+    + 'on. ' + esc(d.geo_note || "") + '</p>';
 
-  h += '<h2>Recent page views</h2>' + tbl(["When","Client","Route","Path","Status"],
-    d.views_recent.map(r=>[when(r.t), who(r.client), via(r.via), esc(r.path), r.status]));
+  h += sect("Recent sessions", "sessions", [
+    {k:"first", t:"Started", n:true, v:r=>r.first, f:r=>when(r.first)},
+    {k:"client", t:"Client", v:r=>r.client, f:r=>who(r.client)},
+    {k:"via", t:"Route", v:r=>r.via, f:r=>via(r.via)},
+    {k:"host", t:"Host", v:r=>r.host, f:r=>esc(r.host)},
+    N("reqs","Requests", r=>r.reqs.toLocaleString()), N("pages","Pages"),
+    {k:"last", t:"Last", n:true, v:r=>r.last, f:r=>ago(r.last)},
+  ], d.sessions_recent.filter(r => keep(r.client)), true, ["first", -1]);
 
-  h += '<h2>Most requested</h2>' + tbl(["Path","Views"],
-    d.top_paths.map(r=>[esc(r.path), r.n]));
+  h += sect("Recent page views", "views", [
+    {k:"t", t:"When", n:true, v:r=>r.t, f:r=>when(r.t)},
+    {k:"client", t:"Client", v:r=>r.client, f:r=>who(r.client)},
+    {k:"via", t:"Route", v:r=>r.via, f:r=>via(r.via)},
+    {k:"path", t:"Path", v:r=>r.path, f:r=>esc(r.path)},
+    {k:"status", t:"Status", n:true, v:r=>r.status, f:r=>r.status},
+  ], d.views_recent.filter(r => keep(r.client)), true, ["t", -1]);
+
+  h += sect("Most requested", "paths", [
+    {k:"path", t:"Path", v:r=>r.path, f:r=>esc(r.path)},
+    N("n","Views"),
+  ], d.top_paths, false, ["n", -1]);
+
   out.innerHTML = h;
-  // change fires on blur or Enter, so one reload per edit, not per keystroke.
+
+  out.querySelectorAll("th.s").forEach(th => {
+    th.addEventListener("click", () => {
+      const id = th.dataset.t, k = th.dataset.k;
+      const st = sorts[id];
+      if(st.k === k) st.dir = -st.dir;
+      else { st.k = k; st.dir = 1; }
+      draw();
+    });
+  });
+  // change fires on blur or Enter, so one save per edit, not per keystroke.
   out.querySelectorAll("input.nm").forEach(el => {
     el.addEventListener("change", async () => {
       el.disabled = true;
@@ -5543,7 +5958,14 @@ async function load(){
     });
   });
 }
-sel.addEventListener("change", load); load();
+
+function card(v, l){
+  return '<div class="card"><b>'+esc(v)+'</b><span>'+esc(l)+'</span></div>';
+}
+
+sel.addEventListener("change", load);
+kSel.addEventListener("change", () => { if(D) draw(); });
+load();
 </script></body></html>
 """
 
@@ -5561,21 +5983,63 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_one_request(self):
         self._t0 = time.time()
+        # Connections are kept alive, so this must be cleared per REQUEST,
+        # not per connection: otherwise the second request on a socket is
+        # classified as whatever the first one was.
+        self._src = None
         super().handle_one_request()
+
+    # Writes are confined to the networks you control. "funnel" is the
+    # public internet by another name; "internet" means something is
+    # forwarding a port and is no more trustworthy; "unknown" means we could
+    # not tell, which is not a basis for writing to the database.
+    WRITE_ROUTES = ("local", "lan", "tailnet")
+
+    def request_source(self):
+        """(client, peer, via, host), worked out once per request.
+
+        X-Forwarded-For is believed ONLY when the request arrived through
+        the Tailscale proxy -- which is to say, from loopback. A request
+        made straight to :8080, over the LAN or over a tailnet subnet
+        route, carries a peer we can see for ourselves and has no business
+        asserting anything about itself.
+
+        The LAST value is taken, not the first. Proxies APPEND, so the
+        right-hand end is what our own proxy observed and anything left of
+        it was supplied by the caller. Tailscale replaces the header
+        outright today, which makes this belt and braces -- but it is the
+        half that stays true if anything else is ever put in front, and the
+        half that mattered the moment :8080 became directly reachable.
+        """
+        src = getattr(self, "_src", None)
+        if src is None:
+            peer = self.client_address[0] if self.client_address else ""
+            p = _as_ip(peer)
+            fwd = None
+            if p is not None and p.is_loopback:
+                fwd = ((self.headers.get("X-Forwarded-For") or "")
+                       .split(",")[-1].strip() or None)
+            host = self.headers.get("Host") or ""
+            src = self._src = ((fwd or peer), peer,
+                               classify_via(peer, fwd, host), host)
+        return src
+
+    def writes_allowed(self):
+        """Whether this request may change anything."""
+        if web_config().get("funnel_writes", False):
+            return True
+        return self.request_source()[2] in self.WRITE_ROUTES
 
     def _note_access(self, code, nbytes):
         """Record the request. Never allowed to affect the response."""
         try:
             if not access_log_on():
                 return
-            fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0]
-            fwd = fwd.strip() or None
-            peer = self.client_address[0] if self.client_address else ""
-            host = self.headers.get("Host") or ""
+            client, peer, via, host = self.request_source()
             path = self.path or "/"
             access_log().record(
-                client=(fwd or peer), peer=peer,
-                via=classify_via(peer, fwd, host), host=host,
+                client=client, peer=peer,
+                via=via, host=host,
                 method=self.command or "", path=path, status=code,
                 nbytes=nbytes,
                 ms=round((time.time() - getattr(self, "_t0", time.time()))
@@ -5618,8 +6082,26 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
 
+    # Injected into every HTML page. A guest on the funnel should not be
+    # shown a Correct button that cannot work -- a control that fails
+    # silently is worse than one that was never offered. CSS rather than a
+    # one-off sweep because the usage page builds its name fields after
+    # load, and a rule applies to elements that do not exist yet.
+    _RO_SHIM = (b'<script>window.RW=%s;</script>'
+                b'<style>body.ro #corrBtn,body.ro #run,'
+                b'body.ro input.nm{display:none!important}</style>'
+                b'<script>document.addEventListener("DOMContentLoaded",'
+                b'function(){if(!window.RW)document.body.classList.add("ro");'
+                b'});</script></head>')
+
     def _send(self, code, body, ctype, extra=None):
         extra = dict(extra or {})
+        # Before compression, or the marker would be inserted into gzip.
+        if ctype.startswith("text/html") and b"</head>" in body:
+            body = body.replace(
+                b"</head>",
+                self._RO_SHIM % (b"1" if self.writes_allowed() else b"0"),
+                1)
         if self._gzip_ok(code, body, ctype, extra):
             body = gzip.compress(body, self._GZIP_LEVEL)
             extra["Content-Encoding"] = "gzip"
@@ -5648,6 +6130,17 @@ class Handler(BaseHTTPRequestHandler):
         that follows links speculatively -- a browser prefetch, a link
         checker, a chat client unfurling a URL.
         """
+        # One gate for every write, rather than a check inside each
+        # endpoint. Per-endpoint checks fail by omission; this one means a
+        # POST added later is refused until somebody decides otherwise.
+        if not self.writes_allowed():
+            self._send(403,
+                       b'{"error":"This log is read-only over the public '
+                       b'funnel. Corrections, names and briefs are '
+                       b'available over the tailnet or the local network."}',
+                       "application/json")
+            return
+
         path = self.path.split("?", 1)[0]
         if path == "/api/usage/name":
             if not access_log_on():
@@ -5750,6 +6243,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/":
             self._send(200, page_html().encode("utf-8"), "text/html; charset=utf-8")
+            return
+
+        if path == "/robots.txt":
+            # Tailscale provisions a Let's Encrypt certificate for the
+            # funnel hostname, and every certificate issued goes into public
+            # Certificate Transparency logs -- so the address is findable
+            # without anyone having shared it, and scanners watch those logs.
+            # They ignore this file. The crawlers that honour it are exactly
+            # the ones that would otherwise put a boat's radio traffic into
+            # a search index, and one of them has already been here.
+            self._send(200, b"User-agent: *\nDisallow: /\n",
+                       "text/plain; charset=utf-8")
             return
 
         if path == "/favicon.ico":
@@ -5919,6 +6424,43 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, USAGE.encode("utf-8"),
                        "text/html; charset=utf-8")
+            return
+
+        if path == "/api/usage/export":
+            if not access_log_on():
+                self._send(404, b'{"error":"usage logging is switched off"}',
+                           "application/json")
+                return
+            q = urllib.parse.parse_qs(self.path.partition("?")[2])
+            try:
+                days = max(1, min(3650, int((q.get("days") or ["7"])[0])))
+            except ValueError:
+                days = 7
+            data = access_log().summary(days)
+            stamp = time.strftime("%Y%m%d-%H%M", time.localtime())
+            if (q.get("format") or ["csv"])[0] == "json":
+                self._send(200, json.dumps(data, indent=1).encode(),
+                           "application/json",
+                           {"Content-Disposition":
+                            'attachment; filename="usage-%s.json"' % stamp})
+                return
+            name = (q.get("table") or ["clients"])[0]
+            spec = USAGE_CSV.get(name)
+            if not spec:
+                self._send(400, b'{"error":"unknown table"}',
+                           "application/json")
+                return
+            key, cols = spec
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow([h for h, _ in cols])
+            for r in (data.get(key) or []):
+                w.writerow([fn(r, data) for _, fn in cols])
+            self._send(200, buf.getvalue().encode("utf-8"),
+                       "text/csv; charset=utf-8",
+                       {"Content-Disposition":
+                        'attachment; filename="usage-%s-%s.csv"'
+                        % (name, stamp)})
             return
 
         if path == "/api/usage":

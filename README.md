@@ -165,8 +165,12 @@ matters for this use:
   channel.
 - **A CTRL input** will key the switch from the transceiver's PTT line
   directly, if you would rather not depend on RF sensing.
-- **Remove JP2.** It improves receive-path loss at VHF and UHF, which is the
-  only band this system uses.
+- **JP2 improves receive-path loss at VHF and UHF — but removing it turns off
+  RF sensing.** Both halves of that matter. With JP2 gone the switch no longer
+  listens for your transmission, so the CTRL line **must** be wired to the
+  transceiver's key output first. Remove it without doing that and the switch
+  never transfers: the next time anyone keys the handset, 25 W arrives at the
+  dongle. Leave JP2 in place unless you are wiring CTRL in the same sitting.
 - **Never transmit into the SDR REC port.** It is an input only.
 
 The cost of the arrangement is a blind spot, and it is worth understanding
@@ -500,29 +504,63 @@ derived from those sessions, because a tab left open across midnight is one
 session but two days, and no query over sessions gets that right at both ends.
 
 Each visit is classified by how it arrived — `lan`, `tailnet`, `funnel`,
-`internet`, `local` — which is what makes the address worth anything. Tailscale
-terminates TLS and proxies to loopback, so the real client comes from
-`X-Forwarded-For`; a direct tailnet peer keeps its `100.64.0.0/10` address,
-which Python counts as private, so that test has to run first or every tailnet
-visit reads as LAN.
+`internet`, `local` — which is what makes the address worth anything, and what
+decides whether the request may write. Tailscale terminates TLS and proxies to
+loopback, so the real client comes from `X-Forwarded-For`; a direct tailnet
+peer keeps its `100.64.0.0/10` address, which Python counts as private, so that
+test has to run first or every tailnet visit reads as LAN.
+
+That header is only believed when the request actually came through the proxy —
+that is, from loopback — and the **last** value is taken, not the first. A
+request made straight to `:8080` over the LAN carries an address we can see for
+ourselves and has no business asserting one; a proxied request carries a header
+Tailscale wrote. Proxies append, so the right-hand end is what our own proxy
+observed and anything left of it was supplied by the caller. Read the first
+value instead and anyone can write whatever address they like into your log, or
+promote themselves to a route that is allowed to write. A proxied request
+carrying no `X-Forwarded-For` at all is `unknown` rather than `tailnet`, because
+at that point we genuinely cannot tell, and the benefit of the doubt should not
+go to whoever we can see least.
+
+Every client is called a **person or a machine**, and the badge says on hover
+what that was based on. The strongest signal is what was asked for: a request
+for `/.env` or `/.git/config` that answered 404 is not a browser. After that
+comes the user agent, then whether anything was ever successfully loaded — a
+client that collected nine bytes and left did not read your log. A **Show**
+filter takes the machines out of every table at once, which matters more than
+it sounds: on this receiver the scanners outnumber the people two to one.
+
+**Every column sorts**, on the underlying value rather than the rendered text,
+so `Served` puts 108 B below 5.9 MB instead of above it and `Last seen` orders
+by timestamp instead of alphabetising "3h ago". Each table exports to CSV,
+written through a real CSV writer because a user agent contains commas, and the
+whole summary exports as JSON.
+
+**City and country** come from a local DB-IP Lite database — nothing about who
+visits is sent anywhere to find out — and the columns simply read `—` if you
+have not installed one. Country is dependable; city is not, for exactly the
+addresses you most want it for, since a phone resolves to wherever its carrier
+hands off traffic.
 
 You can put a name to an address, and the page tells you how much that name is
 worth: a tailnet address is per-device and effectively permanent, a LAN address
 can move with DHCP, and a funnel address changes as a phone changes network —
-so a name there labels one visit, not one person.
+so a name there labels one visit, not one person. Naming an address also marks
+it as a person, since you know something the heuristics do not.
 
 It lives in its own database (`access.db`), because the receiver writes to the
 log continuously and must never wait on a web request. Traffic older than
 `access_log_days` is dropped; names are kept. Turn the whole thing off with
-`access_log = false` under `[web]`.
+`access_log = false` under `[web]`, and point `geo_db` at a city database if
+you want the location columns.
 
 ---
 
 ## The AI brief (optional, and not offline)
 
 There is one feature that breaks the no-cloud rule, and it is off unless you
-configure it. `/brief` sends the last several hours of Ch16 and Ch22A
-transcripts — **and the vessel's position** — to a third-party language model
+configure it. `/brief` sends the last several hours of transcripts — **and the
+vessel's position** — to a third-party language model
 and asks for a safety summary: what is active, what is within 100 nm, what the
 weather is doing. It supports any OpenAI-compatible endpoint and Google's
 Gemini, and the API key lives in a file beside `webui.py` that is not tracked
@@ -537,6 +575,20 @@ The brief opens with what the model thinks you should do about today — avoid,
 watch, ignore — and only then gives you the traffic behind it, so the part you
 act on is not buried under a table. Everything in the tables links back to a
 recording.
+
+`export_query` under `[ai]` decides what it is given, and it names no channel
+by default, which both ends read as *every* channel: the API leaves the filter
+unset and the page selects all of them. Narrowing it to 16 and 22A costs fewer
+tokens and misses what the working channels are saying.
+
+Set `price_in_per_mtok` and `price_out_per_mtok` and each brief reports what it
+cost. Input and output are priced separately by every provider worth using and
+the token counts are recorded separately, so this is arithmetic rather than a
+blended guess — on a short run here, pricing off the total instead of the two
+parts came out 18% low. There is deliberately no default: providers price
+differently, rates change, and a stale number with a dollar sign on it is worse
+than no number. The cost is worked out when the brief **runs** and stored with
+it, so changing the rates later cannot restate what an old brief cost.
 
 Three things about it are worth knowing before you turn it on:
 
@@ -620,6 +672,14 @@ link in the settings panel of every page.
   you should listen. The design consistently prefers a garbled transcript over a
   plausible invented one.
 - **Reception governs everything.** See the antenna section above.
+- **It hears things you will not.** Not because the radio is deaf — because a
+  decoder is better than an ear at pulling speech out of hash. In a measured
+  two-hour window on Ch16, of 55 transmissions only three were faint enough
+  for a marine squelch to have stayed shut. Twelve more arrived *louder* than
+  the normaliser's target with an SNR under 6 dB: a level-gated squelch opens
+  on those, so they came out of the speaker as noise and were dismissed, while
+  the transcriber got usable words out of the same audio. If the log shows
+  traffic you do not remember hearing, that is the usual reason.
 - **The receiver is deaf while your own VHF transmits.** If the antenna is
   shared through a T/R switch, every transmission from this vessel takes the
   antenna away for its duration — on all channels at once, not just the one in
@@ -637,10 +697,23 @@ link in the settings panel of every page.
 - **Digital traffic is not decoded.** AIS and any DSC or digital voice on the
   band will be captured as noise. There is a `wx` preset that captures AIS audio
   but it does not decode it.
-- **No authentication.** The web interface trusts anyone who can reach port
-  8080. Keep it on a private network or behind Tailscale; do not port-forward
-  it. Corrections are writes, and they are unauthenticated too — the log of who
-  changed what is the only control there is.
+- **No authentication, and reading is not gated at all.** Anyone who can reach
+  the interface can read every transcript, play every recording and see the
+  receiver's position. Keep it on a private network or behind Tailscale; do not
+  port-forward it.
+  **Writing is gated by route.** Corrections, address names and brief runs are
+  refused over the public funnel, and over anything else the receiver cannot
+  positively identify as local, LAN or tailnet; `funnel_writes = true` under
+  `[web]` opts back out. Within those networks the writes are still
+  unauthenticated, and the log of who changed what is the only control there
+  is.
+  **The funnel hostname is not a secret.** Tailscale obtains a certificate for
+  it, every certificate issued is published in Certificate Transparency logs,
+  and scanners watch those logs. Expect to be found within hours of switching
+  the funnel on, whether or not you have given anyone the address — this
+  receiver was, repeatedly. A `robots.txt` asks the crawlers that honour it to
+  stay out; nothing deters the rest, which is why nothing behind the door is
+  the only defence that counts.
 
 ## Repository layout
 

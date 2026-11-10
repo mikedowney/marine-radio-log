@@ -469,10 +469,24 @@ figures from the manufacturer:</p>
           which removes the dependence on sensing the RF at all.</td></tr>
 </table>
 
-<p>Two installation notes from the manual are worth acting on. Removing
-<b>JP2</b> improves receive-path loss at VHF and UHF, which is the only band
-this system uses, so there is no reason to leave it in. And nothing may ever
-be transmitted into the SDR REC port &mdash; that port is an input only.</p>
+<div class="note">
+  <b>JP2 is not a free improvement &mdash; read this before pulling it</b>
+  <p>Removing <strong>JP2</strong> does improve receive-path loss at VHF and UHF, which
+  is the only band this system uses. It also <strong>turns off RF sensing</strong>.
+  Those are the same jumper, and the manual gives both.</p>
+  <p>With JP2 gone the switch no longer listens for your transmission, so it
+  no longer transfers the antenna on its own. If the CTRL line is not already
+  wired to the transceiver's key output, the switch simply never operates, and
+  the next time anyone picks up the handset 25&nbsp;W arrives at an input
+  built for microvolts. The dongle does not survive it and nothing warns you
+  first &mdash; the loss is instant and total.</p>
+  <p>So: wire CTRL first, confirm the switch transfers on key-down, and only
+  then remove JP2. If you are relying on RF sensing, leave JP2 in place. The
+  receive-path gain is a decibel or two; the downside is the receiver.</p>
+</div>
+
+<p>And nothing may ever be transmitted into the SDR REC port &mdash; that port
+is an input only.</p>
 
 <div class="note">
   <b>The coverage gap this creates</b>
@@ -2361,6 +2375,20 @@ tuner's DC spike lands in empty spectrum.</p>
   <tr><td><code>access_log_days</code></td>
       <td><code>90</code> by default. How long usage traffic is kept;
           <code>0</code> keeps it indefinitely. Names are never pruned.</td></tr>
+  <tr><td><code>funnel_writes</code></td>
+      <td><code>false</code> by default. Whether the public funnel may change
+          anything. False means corrections, address names and brief runs
+          answer 403 unless the request came from loopback, the LAN or the
+          tailnet; reading is untouched. Set it true only if you run
+          funnel-only and accept that anyone who finds the host can write.
+          See <a href="#readonly">10</a>.</td></tr>
+  <tr><td><code>geo_db</code></td>
+      <td>Blank by default, meaning
+          <code>~/watchkeeper/dbip-city-lite.mmdb</code>. A DB-IP Lite city
+          database for the city and country columns on
+          <a href="#usagepage">/usage</a>. The lookup is local &mdash; nothing
+          about who visits is sent anywhere. Opened once at first use, so a
+          change here needs the web service restarted.</td></tr>
 </table>
 
 <p>Read by <code>webui.py</code> on each request rather than at startup, so an
@@ -3227,12 +3255,30 @@ restart.</p>
   <tr><td><code>prompt_file</code></td><td><code>brief_prompt.txt</code></td>
       <td>Relative to <code>webui.py</code>.</td></tr>
   <tr><td><code>export_query</code></td>
-      <td>Ch16+22A, 24&nbsp;h, with text, q&nbsp;&ge;&nbsp;55, &ge;&nbsp;3&nbsp;s</td>
-      <td>Any query <a href="#export">/api/export</a> accepts. On the boat the
+      <td>every channel, 24&nbsp;h, with text, q&nbsp;&ge;&nbsp;55, &ge;&nbsp;3&nbsp;s</td>
+      <td>Any query <a href="#export">/api/export</a> accepts. It names no
+          channel, and both ends read that as <em>every</em> channel: the API
+          leaves the filter unset, and the brief page selects all of them when
+          the configured list is empty. <code>channel=all</code> would also
+          satisfy the API but would leave a phantom entry in the page's filter.
+          It was Ch16 and 22A until 10 November; the working channels were
+          carrying enough worth reading to be worth the tokens. On the boat the
           quality and duration floors are dropped to
           <code>min_quality=0&amp;min_duration=1</code>, to match the receiver:
           it no longer filters by readability either, and 1&nbsp;s still skips
           sub-second squelch artefacts.</td></tr>
+  <tr><td><code>price_in_per_mtok</code>, <code>price_out_per_mtok</code></td>
+      <td><code>0.0</code>, <code>0.0</code></td>
+      <td>Dollars per million tokens. Both zero hides the cost line entirely.
+          There is deliberately no default: providers price differently, rates
+          change, and a stale number with a dollar sign in front of it is
+          worse than no number. Input and output are priced separately by
+          every provider worth using and the two token counts are recorded
+          separately, so the figure is arithmetic rather than a blended guess
+          &mdash; on a 7,672-token run here, pricing off the total instead of
+          the two parts came out 18% low. The cost is worked out when the
+          brief <em>runs</em> and stored in its record with the rates used, so
+          editing these later cannot restate what an old brief cost.</td></tr>
   <tr><td><code>stitch_min_duration_s</code>, <code>stitch_gap_s</code></td>
       <td><code>85.0</code>, <code>3.0</code></td>
       <td>Re-join transmissions the receiver cut at
@@ -3392,13 +3438,131 @@ hour, on whichever request happens to be in hand. Recording is wrapped so that
 a failure can never affect the response: if the log cannot be written the
 request is served anyway and the reason goes to the journal at debug level.</p>
 
-<p>Two endpoints back the page. <code>/api/usage?days=N</code> returns the
-whole summary as JSON. <code>POST /api/usage/name</code> takes
+<h4>Person or machine</h4>
+
+<p>Every client carries a verdict, and hovering it says what the verdict was
+based on &mdash; it is a guess, and a guess that will not show its working is
+not worth having. In order of weight:</p>
+
+<ol>
+  <li><b>A name you typed.</b> You know something none of this does, so a
+      named address is a person and the rest is not consulted.</li>
+  <li><b>What was asked for.</b> A request for <code>/.env</code>,
+      <code>/.git/config</code> or <code>/wp-login.php</code> that answered
+      4xx is not a browser. Only 4xx counts, so a real path that happens to
+      match the pattern is never held against anyone. This is far and away
+      the most reliable signal.</li>
+  <li><b>The user agent</b>, where it names a tool or advertises a scanner.
+      Several announce themselves outright.</li>
+  <li><b>Whether anything was ever loaded.</b> A client that collected nine
+      bytes and left did not read your log.</li>
+</ol>
+
+<p>The <b>Show</b> filter takes the machines out of every table at once. That
+matters more than it sounds: on this receiver the scanners outnumber the
+people roughly two to one, and the handful of visits worth looking at were
+buried under them.</p>
+
+<p>It is not infallible, and the failure is predictable. Two addresses in a
+known scanner's own <code>/24</code>, each of which loaded a page once and
+left, read as people &mdash; nothing they did was distinguishable from a
+curious human. Name them and they stay named.</p>
+
+<h4>Sorting, export and location</h4>
+
+<p>Every column sorts, on the underlying value rather than the rendered text.
+That is the whole reason the columns carry both: sorting the text puts
+108&nbsp;B above 5.9&nbsp;MB and files "3h ago" before "15m ago". Each table
+exports to CSV &mdash; through a real CSV writer, because a user agent
+contains commas and a name someone typed can contain anything &mdash; and the
+whole summary exports as JSON. The export follows the window selector.</p>
+
+<p>City and country come from a local DB-IP Lite database named by
+<code>geo_db</code>, and the lookup never leaves the Pi. Private, loopback and
+tailnet addresses are skipped: they are this boat, or this boat's own overlay
+network. With no database the columns read "&mdash;" and the page says how to
+switch them on. Country is dependable. City is not, for precisely the
+addresses you most want it for, because a phone resolves to wherever its
+carrier hands off traffic; for hosting providers it is accurate, since the
+machine really is there.</p>
+
+<h4>The endpoints</h4>
+
+<p><code>/api/usage?days=N</code> returns the whole summary as JSON.
+<code>/api/usage/export</code> takes <code>table=</code> one of
+<code>daily</code>, <code>clients</code>, <code>sessions</code> or
+<code>views</code> and returns CSV, or <code>format=json</code> for
+everything. <code>POST /api/usage/name</code> takes
 <code>{"client": &hellip;, "label": &hellip;}</code> and sets or, with an
 empty label, clears a name &mdash; the second unauthenticated write on the
-interface after <a href="#correcting">corrections</a>, and resting on the same
-reasoning: the box is reachable only by people who were given the address, and
-every write is itself logged.</p>
+interface after <a href="#correcting">corrections</a>, and gated by the same
+rule as every other write: see below.</p>
+
+<h3 id="readonly">Who may change anything</h3>
+
+<p>Reading is not gated. Anyone who can reach the interface can read every
+transcript, play every recording and see where the receiver is. Writing is,
+and it is gated on the route the request arrived by &mdash; the same
+classification the <a href="#usagepage">usage page</a> displays.</p>
+
+<p>Writes are permitted from <code>local</code>, <code>lan</code> and
+<code>tailnet</code>, and refused with a 403 from anything else.
+<code>funnel_writes = true</code> under <code>[web]</code> opts back out of
+it. The refusal is recorded like any other request, so a denied write is
+visible rather than silent, and pages served to a client that may not write
+hide the controls it would not be able to use &mdash; a <b>Correct</b> button
+that fails quietly is worse than one that was never offered.</p>
+
+<p>It is an allowlist, not a blocklist, and one gate rather than a check per
+endpoint. Blocking <code>funnel</code> by name would have left
+<code>internet</code> &mdash; a forwarded port, which is no more trustworthy
+&mdash; and <code>unknown</code> open. A check inside each endpoint fails by
+omission the first time somebody adds a new one; a single gate at the top of
+<code>do_POST</code> means a write added later is refused until somebody
+decides otherwise.</p>
+
+<div class="note">
+  <b>Why the forwarded address is read from the right-hand end</b>
+  <p><code>X-Forwarded-For</code> is believed only when the request actually
+  arrived through the Tailscale proxy, which is to say from loopback. A
+  request made straight to <code>:8080</code> &mdash; over the LAN, or over a
+  tailnet subnet route &mdash; carries a peer address we can observe for
+  ourselves and has no business asserting one.</p>
+  <p>And the <strong>last</strong> value is taken, not the first. Proxies append, so the
+  right-hand end is what our own proxy saw and everything to the left of it
+  was supplied by whoever is calling. Reading the first value instead lets
+  anyone write whatever address they like into the usage log, and &mdash; once
+  the route decides who may write &mdash; promote themselves into a route that
+  is allowed to. Tailscale replaces the header outright today, which was
+  confirmed by sending a forged one through the funnel and watching the real
+  address arrive; this is the half that stays true if anything else is ever
+  put in front, and the half that mattered the moment <code>:8080</code>
+  became directly reachable.</p>
+  <p>A proxied request carrying no forwarded address at all is
+  <code>unknown</code>, not <code>tailnet</code>. We cannot tell which it was,
+  and the benefit of the doubt should not go to whoever we can see least.</p>
+</div>
+
+<h4>robots.txt</h4>
+
+<p><code>/robots.txt</code> answers <code>Disallow: /</code>. It does nothing
+about scanners, which ignore it. It is for the crawlers that honour it, which
+are exactly the ones that would otherwise put a boat's radio traffic into a
+search index &mdash; and one of them had already rendered the page here,
+executed its JavaScript and pulled the message ring, two days before the file
+existed.</p>
+
+<p>Do not assume the hostname is a secret. Tailscale obtains a certificate for
+it, every certificate issued is published in Certificate Transparency logs,
+and scanners watch those logs continuously. This receiver was found within
+hours of the funnel going up, repeatedly, by parties nobody had given the
+address to. Expect that, and take it as the reason to be sure there is nothing
+behind the door: in two days of probing &mdash; credential sweeps for
+<code>.env</code> files and cloud service-account keys, VCS metadata, PHP
+diagnostics &mdash; 85 of 87 requests answered 404 and the other two were the
+front page. Every route is an exact match, there is no static file handler,
+and <code>/audio/&lt;id&gt;</code> resolves through the database and refuses
+anything outside the audio directory.</p>
 
 <!-- ========================================================= -->
 <h2 id="admin">11. Routine administration</h2>

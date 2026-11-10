@@ -819,7 +819,20 @@ endpoint = "https://generativelanguage.googleapis.com/v1beta"
 model = "gemini-3.8-flash"
 thinking_budget = 0
 timeout_s = 600
-export_query = "channel=16,22a&hours=24&text=1&min_quality=55&min_duration=3"
+# No channel= term, which both ends read as "every channel": the API leaves
+# the filter unset, and the brief page selects all of them when the configured
+# list is empty. Name channels here to narrow it.
+export_query = "hours=24&text=1&min_quality=55&min_duration=3"
+
+# Dollars per million tokens, for the cost shown on each brief. Both zero
+# hides the cost. There is no sensible default -- providers price differently
+# and rates change, and a stale number with a dollar sign on it is worse than
+# no number. Input and output are priced separately and counted separately,
+# so the figure is arithmetic, not a blended guess. The cost is worked out
+# when a brief RUNS and stored with it, so editing these later cannot
+# restate what an old brief cost.
+price_in_per_mtok  = 0.0
+price_out_per_mtok = 0.0
 
 # Consecutive clips on one channel that together exceed this are treated as a
 # single broadcast when the brief counts how often something was heard, so a
@@ -838,3 +851,27 @@ stitch_min_duration_s = 595.0
 # a cooler that looks worse from an hour that was simply busier. On by
 # default; set false to hide it.
 thermal_report = true
+
+# Usage logging: who reaches the interface, by what route, and when. Requests
+# fold into sessions rather than one row each -- the log page polls every
+# three seconds, so one open tab is about 29,000 requests a day. false stops
+# the recording as well as hiding /usage; anything already stored is kept.
+access_log = true
+
+# How long usage traffic is kept. 0 keeps it indefinitely. Names given to
+# addresses are never pruned -- they cost nothing and cannot be rebuilt.
+access_log_days = 90
+
+# Whether the public funnel may change anything. false means corrections,
+# address names and brief runs answer 403 unless the request came from
+# loopback, the LAN or the tailnet; reading is untouched. The funnel hostname
+# is published in Certificate Transparency logs the moment Tailscale gets a
+# certificate for it, so "nobody knows the address" was never true. Set true
+# only if you run funnel-only and accept that whoever finds it can write.
+funnel_writes = false
+
+# A DB-IP Lite city database, for the city and country columns on /usage.
+# Blank means ~/watchkeeper/dbip-city-lite.mmdb. The lookup is local: nothing
+# about who visits is sent anywhere to find out. Opened once at first use, so
+# changing this needs the web service restarted.
+geo_db = ""
