@@ -5,7 +5,7 @@ listens to six or more channels **at once**, records every transmission as a
 separate audio file, transcribes it, and serves a phone-friendly log you can
 read from the cockpit or anywhere on your network.
 
-![The message log: six channels received simultaneously, newest first](docs/main_screen.jpg)
+![The message log: seven voice channels and DSC received simultaneously, newest first, with a favourite's proximity alert in the header](docs/main_screen.jpg)
 
 ## Why not a scanner?
 
@@ -597,6 +597,8 @@ you want the location columns.
 The radio tells you what was said. AIS tells you who was there. Putting the two
 together is most of what makes this more useful than a scanner.
 
+![The map in Vessels mode: every vessel under way as a heading arrow coloured by speed, one selected with her track drawn, and the side log tailing alongside](docs/map_vessels.jpg)
+
 ### Where the AIS comes from
 
 `ais_ingest.py` reads NMEA 0183 sentences over the network — from a PredictWind
@@ -692,6 +694,8 @@ drawn dashed rather than joined up as legs she did not sail.
 the pointer, in nautical miles, or yards under a tenth of a mile. The pin is a
 position rather than a pixel, so panning and zooming leave it on the water.
 
+![Measuring: a pin dropped offshore and a dashed leg to the cursor, reading 15.2 nm at 188 degrees true](docs/map_measure.jpg)
+
 **The side log** tails live: the newest 100 lines across all channels, with new
 traffic appending as it arrives. A dropdown chooses the source — all channels,
 one channel, only the selected vessel's tagged traffic, or nothing. Clicking a
@@ -702,6 +706,8 @@ herself, often missing and sometimes wrong, and it never says the thing you
 actually want to know. Any pinned vessel's type can be replaced with your own
 words — *Buddy boat*, *Harbour patrol* — from the AIS page. The broadcast type
 is kept and shown on hover.
+
+![The AIS page: favourites pinned at the top with their own type names, then every other target by distance](docs/ais_targets.jpg)
 
 ### Keeping it current without melting the Pi
 
