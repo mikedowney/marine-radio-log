@@ -2302,7 +2302,10 @@ def build_index(summary):
         "count": len(rows),
         "span": span,
     }
-    return INDEX_PAGE.replace("/*DATA*/", json.dumps({"meta": meta, "rows": rows}))
+    # Inlined into a <script> in the exported transcript.html, which is
+    # the copy handed to other people: see _js_json.
+    return INDEX_PAGE.replace("/*DATA*/",
+                              _js_json({"meta": meta, "rows": rows}))
 
 
 # rlog:dscjs v1 begin
@@ -10745,16 +10748,29 @@ def _despike(rows, now=None):
 
     kept = [first[0]]
     i = 1
-    while i < len(first) - 1:
-        cur, nxt = first[i], first[i + 1]
+    while i < len(first):
+        cur = first[i]
+        nxt = first[i + 1] if i + 1 < len(first) else None
         prev = kept[-1]
-        if (kt(prev, cur) > TRACK_MAX_KT
-                and kt(prev, nxt) <= TRACK_MAX_KT):
+        # The newest fix has nothing after it to be continuous with, so
+        # "does dropping it restore continuity" cannot be asked. It used
+        # to be appended untested for that reason, which left the one
+        # spike the filter exists to catch -- the newest, the one drawn
+        # as where she is now -- the only one it could not catch.
+        #
+        # For the last fix the question the test is really asking is
+        # answered by the speed alone: there is no rest of the track
+        # beyond it to throw away, so a wrong drop costs one fix and is
+        # undone by her next report, while keeping it puts her dot in
+        # the wrong ocean. A long gap is not caught by this, and should
+        # not be: speed is distance over elapsed time, so a fix after a
+        # three-hour silence implies a slow one and passes.
+        restores = kt(prev, nxt) <= TRACK_MAX_KT if nxt is not None else True
+        if kt(prev, cur) > TRACK_MAX_KT and restores:
             dropped += 1          # an isolated spike: step over it
         else:
             kept.append(cur)
         i += 1
-    kept.append(first[-1])
     return kept, dropped
 
 
@@ -11027,15 +11043,39 @@ def fleet_at(when, db_path=None, half=FLEET_HALF_S):
             "truncated": truncated, "vessels": out}
 
 
+def _js_json(obj):
+    r"""json.dumps for a value that is about to be pasted inside a
+    <script> element.
+
+    json.dumps escapes quotes and backslashes but not the forward
+    slash, so any text in the payload containing the six characters
+    </scri... ends the script element as far as the HTML parser is
+    concerned. Everything after it is then parsed as markup. That is
+    not a theoretical worry here: a vessel's AIS name is twenty
+    characters of whatever she chooses to transmit, and
+    "</script><svg/onload" is exactly twenty, so a passing boat can
+    blank this page -- and a longer field, a transcript or a DSC name,
+    can run script of her choosing on it.
+
+    Escaping the slash as <\/ is still the same JSON string: the JSON
+    grammar allows \/ as an escape, so the parser yields the original
+    text. The HTML parser simply never sees a closing tag. U+2028 and
+    U+2029 are the other two characters that are legal in JSON and
+    fatal in JavaScript source; ensure_ascii already escapes those, and
+    passing it explicitly keeps that true if the default ever changes.
+    """
+    return json.dumps(obj, ensure_ascii=True).replace("</", "<\\/")
+
+
 def map_html(db_path, pre=None):
     """The page, with its data inlined. Raises MapUnavailable."""
     # The boat's name comes from the config like every other page's,
     # rather than being written into the source.
     name = wk.STATION_NAME or "Radio Log"
     return (MAP_PAGE
-            .replace("__DATA__", json.dumps(map_payload(db_path, pre)))
+            .replace("__DATA__", _js_json(map_payload(db_path, pre)))
             .replace("{{STATION}}", html.escape(name))
-            .replace("__STATION__", json.dumps(name)))
+            .replace("__STATION__", _js_json(name)))
 
 
 AIS_PAGE = r"""<!DOCTYPE html>
