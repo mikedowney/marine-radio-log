@@ -9877,10 +9877,21 @@ function redraw(doFit) {
   clearScrub();
   if (doFit) refit(); else render();
 }
-// The window changes what is in scope, not where you are looking. It
-// used to refit, which threw away a view you had zoomed in to set just
-// because you wanted more context in it. The fit button is right there
-// when framing the new data is what you actually want.
+/* No control on this page moves the map.
+
+   Changing a setting says what you want to see, not where you want to
+   be looking, and refitting threw away a view you had just zoomed and
+   panned to set. That was true of the window dropdown first, and it is
+   just as true of the vessel dropdown and the mode buttons: you line
+   up on a stretch of coast, switch from messages to vessels, and the
+   map jumps somewhere else.
+
+   So the view is yours and only you move it. Pan, zoom, the +/- keys
+   and zall -- the fit button in the corner -- are the whole of it; zall
+   is what to reach for when framing the new data is the point. The one
+   exception is arriving from elsewhere, where there is no view to keep:
+   first paint, and a link from the log or the AIS page naming a vessel
+   or a transmission, which fits onto what the link was about. */
 winSel.onchange = () => { winH = +winSel.value; fillVessels(); redraw(false); };
 vesSel.onchange = () => {
   vessel = vesSel.value || null;
@@ -9903,14 +9914,14 @@ vesSel.onchange = () => {
     barSummary();
     return;
   }
-  redraw(true);
+  redraw(false);
   selectFirstTagged();
 };
 const mMsg = document.getElementById('mMsg'), mVes = document.getElementById('mVes');
 mMsg.onclick = () => { mode = 'messages'; mMsg.classList.add('on');
-  mVes.classList.remove('on'); redraw(true); };
+  mVes.classList.remove('on'); redraw(false); };
 mVes.onclick = () => { mode = 'vessels'; mVes.classList.add('on');
-  mMsg.classList.remove('on'); redraw(true); };
+  mMsg.classList.remove('on'); redraw(false); };
 // Switching modes changes what a mark means, so the hover text and the
 // click behaviour are rebuilt with them -- redraw() already does that.
 
