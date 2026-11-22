@@ -7807,8 +7807,7 @@ def map_payload(db_path, pre=None, since_t=None, since_h=None):
     for r in a.execute(
             "SELECT started_at, channel, mmsi, name, role, lat, lon,"
             " distance_nm, bearing_deg, rule FROM message_vessel"
-            " WHERE lat IS NOT NULL AND started_at "
-            + (">" if since_h else ">=") + " ?"
+            " WHERE lat IS NOT NULL AND started_at >= ?"
             " ORDER BY started_at", (tag_floor,)):
         ts = _map_epoch(r["started_at"])
         if ts is None:
@@ -7839,7 +7838,19 @@ def map_payload(db_path, pre=None, since_t=None, since_h=None):
           " pos_at FROM ais_targets WHERE lat IS NOT NULL")
     nargs = ()
     if since_t:
-        nq += " AND seen_at > ?"
+        # Inclusive, and deliberately so. seen_at has one-second
+        # resolution, and the watermark the client holds is a MAX() of
+        # it. A vessel who wrote in that same second but after the read
+        # that produced the watermark is not greater than it, so an
+        # exclusive test skipped her and never offered her again --
+        # her dot simply stopped moving until her next report, which
+        # for a Class B at anchor is three minutes.
+        #
+        # The cost of >= is that the boundary row comes back once more
+        # than it needs to. mergeDelta is written to be idempotent for
+        # exactly this reason: targets are keyed by mmsi and overwritten,
+        # tags and history lines are deduplicated before they are added.
+        nq += " AND seen_at >= ?"
         nargs = (since_t,)
     for r in a.execute(nq, nargs):
         kn = known.get(r["mmsi"]) or (None, None)
@@ -7883,7 +7894,7 @@ def map_payload(db_path, pre=None, since_t=None, since_h=None):
             "       AND m.channel = h.channel"
             "       AND m.audio_path IS NOT NULL AND m.audio_path <> ''"
             + corr_join
-            + (" WHERE h.channel=? AND h.started_at > ?"
+            + (" WHERE h.channel=? AND h.started_at >= ?"
                " ORDER BY h.started_at"
                if delta else
                " WHERE h.channel=? AND h.started_at >= ("
@@ -11855,6 +11866,7 @@ class Handler(BaseHTTPRequestHandler):
         # not per connection: otherwise the second request on a socket is
         # classified as whatever the first one was.
         self._src = None
+        self._sent = False
         super().handle_one_request()
 
     # Writes are confined to the networks you control. "funnel" is the
@@ -11963,6 +11975,10 @@ class Handler(BaseHTTPRequestHandler):
                 b'});</script></head>')
 
     def _send(self, code, body, ctype, extra=None):
+        # Every response on this handler goes through here, so this one
+        # flag is enough for _guard to know whether it is still safe to
+        # write an error instead.
+        self._sent = True
         extra = dict(extra or {})
         # Before compression, or the marker would be inserted into gzip.
         if ctype.startswith("text/html") and b"</head>" in body:
@@ -11991,7 +12007,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
-    def do_POST(self):
+    def _do_POST(self):
         """POST-only: running the brief, and naming an address.
 
         A run costs money and minutes, so it must not be reachable by anything
@@ -12141,7 +12157,60 @@ class Handler(BaseHTTPRequestHandler):
                  msg_id, self.client_address[0], res["original"], res["text"])
         self._send(200, json.dumps(res).encode(), "application/json")
 
+    # ---- one place where an unhandled error becomes a reply ----------
+    #
+    # Each route below does its own error handling for what it expects to
+    # go wrong. What was missing was anything for what it did not: an
+    # unexpected exception propagated out of the handler, socketserver
+    # logged a traceback and closed the socket, and the browser got no
+    # response at all -- not a 500, nothing -- which reads as the box
+    # being down rather than one page being broken.
+    #
+    # It did not take much to find one. A query string is text, and
+    # several routes turn it into a number and hand it to SQLite, which
+    # has 64-bit integers; ?hid=99999999999999999999 on /api/context
+    # raised OverflowError before the row was even looked up, and mmsi,
+    # t and hours did the same elsewhere. Those are a client sending
+    # nonsense, so they answer 400. Anything else is ours, and answers
+    # 500 with nothing in the body about what broke: this page is served
+    # over the funnel, and a traceback names paths and a username.
+    def _guard(self, fn):
+        try:
+            fn()
+        except (BrokenPipeError, ConnectionResetError):
+            raise                      # handle() already understands these
+        except (OverflowError, ValueError) as e:
+            log.info("%s %s: bad parameter (%s)", self.command, self.path, e)
+            self._fail(400, "a parameter was not a number this can use")
+        except Exception:              # noqa: BLE001 -- the whole point
+            log.exception("unhandled error serving %s %s",
+                          self.command, self.path)
+            self._fail(500, "something went wrong serving this page")
+
+    def _fail(self, code, msg):
+        """Last-resort reply. Silent if the route already began one, since
+        a second set of headers down the same socket is worse than the
+        truncated body the client is about to get."""
+        if getattr(self, "_sent", False):
+            return
+        wants_json = (self.path.split("?", 1)[0].startswith("/api/")
+                      or "application/json" in (self.headers.get("Accept") or ""))
+        try:
+            if wants_json:
+                self._send(code, json.dumps({"error": msg}).encode(),
+                           "application/json")
+            else:
+                self._send(code, msg.encode(), "text/plain; charset=utf-8")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
+        self._guard(self._do_GET)
+
+    def do_POST(self):
+        self._guard(self._do_POST)
+
+    def _do_GET(self):
         path = self.path.split("?", 1)[0]
 
         if path == "/":
