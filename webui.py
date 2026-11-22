@@ -7744,7 +7744,11 @@ USAGE_CSV = {
 # taken from the running config and its output returned instead of
 # written to the share.
 
-MAP_MAX_HOURS = 336      # two weeks; must match TRACK_HOURS in ais_ingest.py
+MAP_MAX_HOURS = 336      # two weeks; must match TRACK_HOURS in ais_ingest.py.
+#                          Nothing enforces that: they are two constants in
+#                          two files, and the only cost of disagreeing is
+#                          quiet -- a map window with no data behind it, or
+#                          recorded track the page will never offer to show.
 MAP_CONTEXT_PAD = 60      # messages kept before the window, per channel
 MAP_TXT_MAX = 500
 
@@ -10994,7 +10998,7 @@ def _fleet_names(db_path, mmsis):
     return out
 
 
-def fleet_at(when, db_path=None, half=FLEET_HALF_S):
+def fleet_at(when, db_path, half=FLEET_HALF_S):
     """Every vessel under way at `when`, interpolated to that instant.
 
     A vessel reports every few minutes, so placing her at her last fix

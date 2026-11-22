@@ -93,13 +93,26 @@ class Reassembler:
         talker = f[0][1:3]
         if total == 1:
             return talker, f[5]
+        # A fragment number outside 1..total is not a fragment of this
+        # group. Without this the group can never complete and simply
+        # ages out, which is the right outcome for a corrupt sentence --
+        # and it is what keeps the join below safe.
+        if not 1 <= num <= total:
+            return None
         key = (f[3], f[4])
         slot = self.parts.setdefault(key, {})
         slot[num] = f[5]
         self.parts.move_to_end(key)
         while len(self.parts) > self.limit:
             self.parts.popitem(last=False)
-        if len(slot) == total:
+        # Counting the fragments is not the same as having them. A group
+        # of 1 and 3 where 2 was expected satisfies len(slot) == total
+        # and then raises KeyError on the missing one -- which, over the
+        # air, is one corrupted character away at any time. The
+        # exception escaped feed(), broke the receive loop, dropped the
+        # connection to the feed and threw away up to COMMIT_EVERY
+        # seconds of uncommitted positions, logging only "AIS feed: 2".
+        if len(slot) == total and all(i + 1 in slot for i in range(total)):
             self.parts.pop(key, None)
             return talker, "".join(slot[i + 1] for i in range(total))
         return None

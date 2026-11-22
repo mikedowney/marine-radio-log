@@ -566,10 +566,18 @@ class Ingest:
         if c.rowcount:
             log.info("pruned %d target(s) unseen for %dh", c.rowcount,
                      STALE_HOURS)
-        # The track outlives the target by two days: a vessel that left
-        # four hours ago is dropped from ais_targets and its track is
-        # still the answer to where it went. Deliberately a separate
+        # The track outlives the target by a long way: a vessel dropped
+        # from ais_targets two hours after her last report still has a
+        # track answering where she went. Deliberately a separate
         # window, not a join.
+        #
+        # TRACK_HOURS is two weeks, and webui's MAP_MAX_HOURS must
+        # match it -- the map offers windows out to whatever this keeps.
+        # At the rate actually observed here, about 20,000 fixes an
+        # hour, two weeks is ~6.8 million rows and ~400 MB. This table
+        # lives in tmpfs, so that is 400 MB of the Pi's RAM at steady
+        # state. Shortening the window is the lever if that is ever
+        # needed; MAP_MAX_HOURS has to come down with it.
         #
         # No index on t, so this walks the primary-key btree. Measured
         # at 0.07 s over two million rows, against 0.02 s with an index
@@ -818,6 +826,7 @@ def run(host, db, duration=None, tag=True):
     tagger = Tagger(db) if tag else None
     end = time.time() + duration if duration else None
     backoff = 1
+    bad_lines = 0          # counted across reconnects, not reset by one
     last_c = last_p = last_t = time.time()
     while end is None or time.time() < end:
         try:
@@ -840,7 +849,21 @@ def run(host, db, duration=None, tag=True):
                     buf += chunk
                     while b"\n" in buf:
                         ln, buf = buf.split(b"\n", 1)
-                        ing.feed(ln.decode("ascii", "replace"))
+                        # One unreadable sentence must not cost the
+                        # connection. Anything raised in here used to
+                        # unwind to the reconnect handler below, which
+                        # drops the socket, backs off, and loses the
+                        # batch that had not been committed yet -- an
+                        # expensive answer to a single bad line, and
+                        # over the air bad lines are ordinary.
+                        try:
+                            ing.feed(ln.decode("ascii", "replace"))
+                        except Exception as exc:        # noqa: BLE001
+                            bad_lines += 1
+                            if bad_lines in (1, 10, 100) or bad_lines % 1000 == 0:
+                                log.warning("unreadable sentence (%d so far): "
+                                            "%s: %s", bad_lines,
+                                            type(exc).__name__, exc)
                     now = time.time()
                     if now - last_c >= COMMIT_EVERY:
                         ing.commit()
