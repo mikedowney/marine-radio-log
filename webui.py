@@ -9817,13 +9817,26 @@ function fillVessels() {
       }
     }
     vessel = prev;
-  } else if (injected && injected.mmsi === prev) {
+  } else {
+    // No tagged traffic from her inside the new window -- but that is
+    // not a reason to let go of her. In Vessels mode the selection
+    // means "draw her track", and a track does not depend on her
+    // having spoken on the radio. Narrowing the window past her last
+    // transmission used to drop the selection back to All, which took
+    // her trail off the map: it read as the trail breaking rather than
+    // as the selection changing.
+    //
+    // She is kept the same way a vessel reached by link is, as an
+    // entry the dropdown builds for her, so both cases now behave
+    // alike instead of one being an exception.
+    if (!injected || injected.mmsi !== prev) {
+      injected = {mmsi: prev,
+                  label: (vesselName(prev) || prev) + '  (tracked)'};
+    }
     const o = document.createElement('option');
     o.value = prev; o.textContent = injected.label;
     vesSel.appendChild(o);
     vessel = prev;
-  } else {
-    vessel = null;
   }
   vesSel.value = vessel === null ? '' : vessel;
 }
