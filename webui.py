@@ -8842,7 +8842,7 @@ let track = null, trackSeq = 0;
 // She still has a name and a type worth showing.
 let lastIdent = null;
 
-function wantTrack(fit) {
+function wantTrack(fit, force) {
   // Standalone there is no server to ask, so the page simply has no
   // track layer and everything else works unchanged.
   if (!DATA.home) { return; }
@@ -8850,10 +8850,16 @@ function wantTrack(fit) {
     if (track) { track = null; trackLegend(); }
     return;
   }
-  if (track && track.mmsi === vessel && track.hours === winH) { return; }
+  if (!force && track && track.mmsi === vessel && track.hours === winH) {
+    return;
+  }
   // The old track belongs to another vessel; drop it now rather than
   // leaving it drawn under the new selection until the answer lands.
-  if (track) { track = null; trackLegend(); render(); }
+  // On a refresh for the SAME vessel it stays drawn until the new one
+  // arrives, or her track would blink out every time she reports.
+  if (track && !(force && track.mmsi === vessel)) {
+    track = null; trackLegend(); render();
+  }
   const seq = ++trackSeq;
   const want = vessel, wantH = winH;
   fetch('/api/track?mmsi=' + encodeURIComponent(vessel) + '&h=' + winH)
@@ -8897,7 +8903,14 @@ function wantTrack(fit) {
       // this fetch was part of one.
       if (fit && track) { refit(); } else { render(); }
     })
-    .catch(() => { track = null; trackLegend(); render(); });
+    .catch(() => {
+      // A refresh that fails leaves the track that is already drawn.
+      // Only a first fetch has nothing to fall back on.
+      if (!(force && track && track.mmsi === want)) {
+        track = null; trackLegend();
+      }
+      render();
+    });
 }
 
 // The key is collapsible on a phone only, and starts collapsed: it
@@ -10523,7 +10536,16 @@ async function pollOnce() {
       + '&h=' + encodeURIComponent(h.h || '');
     const d = await (await fetch(q, {cache: 'no-store'})).json();
     if (!d.ok || !liveNow()) { return; }
+    // Her track grows as she goes. The delta carries her new position
+    // but not her history, so without this the fleet moved, the
+    // transcripts arrived, and the selected vessel's track stayed
+    // frozen at whatever it was when she was picked. Only asked for
+    // when she has actually reported, so a vessel sitting still costs
+    // nothing.
+    const moved = vessel !== null && d.now
+      && Object.prototype.hasOwnProperty.call(d.now, String(vessel));
     if (mergeDelta(d)) { repaintLive(); }
+    if (moved && liveNow()) { wantTrack(false, true); }
   } catch (err) {
     // A refresh that fails is a refresh that did not happen. The page
     // keeps what it has and tries again on the next tick.

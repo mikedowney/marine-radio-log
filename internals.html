@@ -2911,6 +2911,14 @@ watermarks it already holds. Polled every ten seconds; the database changes
 about that often, so the result is near enough to live while doing almost
 nothing in between.</p>
 
+<p>A selected vessel's track is refreshed alongside this, but only when the
+delta says she has actually reported &mdash; the delta carries her new
+position and not her history, so without that the fleet moved, the
+transcripts arrived, and her track stayed frozen at whatever it was when she
+was picked. The drawn track stays up while the new one is in flight, and
+survives a refresh that fails; only a first fetch has nothing to fall back
+on.</p>
+
 <p>Polling stops while the replay is running, while the clock is parked in the
 past, mid-drag, and while the tab is hidden. Vessels the server would have
 dropped are aged out of the page on the same two-hour rule, since a delta
