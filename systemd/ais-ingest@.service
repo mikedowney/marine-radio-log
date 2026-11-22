@@ -1,0 +1,22 @@
+[Unit]
+Description=Radio Log -- AIS ingest
+Documentation=http://localhost:8080/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i
+ExecStart=/usr/bin/python3 /home/%i/ais_ingest.py
+Restart=always
+RestartSec=10
+# The watch gets the CPU first. This is bookkeeping, not signal work.
+Nice=5
+IOSchedulingClass=idle
+# It only ever writes its own database.
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

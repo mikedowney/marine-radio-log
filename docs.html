@@ -145,6 +145,17 @@ while something else is talking.</p>
 <p>The band is marine VHF, 156&ndash;158&nbsp;MHz, narrowband FM: boats,
 harbour control, vessel traffic services and the Coast Guard.</p>
 
+<p>Alongside the voice channels it takes an AIS feed, so it also knows what is
+around you. Transmissions are matched against that picture by name, which is
+what turns an unattributed voice into a named vessel, and the two are drawn
+together on a <a href="#mappage">map</a> with a 24-hour replay. Ch70 is
+decoded as data rather than heard as noise, so the digital calls that precede
+a voice exchange are logged with it. See <a href="#ais-ingest">&sect;5.16</a>
+onwards.</p>
+
+<p>None of that is required. With no AIS feed the radio side works exactly as
+it always did; the vessel names simply stop appearing.</p>
+
 <!-- ========================================================= -->
 <!-- ========================================================= -->
 <h2 id="using">2. Using the log</h2>
@@ -2035,6 +2046,131 @@ slows the DSP as well and risks dropped chunks. Because the queue is
 newest-first, whatever piles up during a pause is the oldest and least
 interesting.</p>
 
+
+<h3 id="ais-ingest">5.16 AIS</h3>
+
+<p>AIS runs alongside the receiver rather than through it.
+<code>ais_ingest.py</code> is its own service, reading NMEA 0183 sentences over
+the network &mdash; from a DataHub, a Signal K server, a dedicated receiver,
+anything that broadcasts them &mdash; into <code>ais.db</code>. The radio keeps
+working perfectly well with no AIS feed at all, and the AIS picture survives a
+receiver restart.</p>
+
+<p>It takes no TOML configuration. By default it waits for the source&rsquo;s
+UDP broadcast on port&nbsp;11101 and connects back on TCP&nbsp;11102;
+<code>--host</code> names the address directly for a source that does not
+announce itself. <code>--selftest</code> exercises the decoder with no live
+feed, and <code>--once&nbsp;N</code> runs for N seconds and exits &mdash; the
+quick way to confirm sentences are arriving before enabling the
+service.</p>
+
+<p>Three stores, with different lifetimes, and the split is the point:</p>
+
+<table>
+  <tr><th>Table</th><th>Holds</th><th>Lifetime</th></tr>
+  <tr><td><code>ais_targets</code></td>
+      <td>The live picture: position, speed, course, type.</td>
+      <td>Dropped two hours after last heard.</td></tr>
+  <tr><td><code>ais_vessel</code></td>
+      <td>Identity: MMSI, name, ship type.</td>
+      <td>Permanent.</td></tr>
+  <tr><td><code>ais_track</code></td>
+      <td>Position history, for tracks and the replay.</td>
+      <td>The rolling window.</td></tr>
+</table>
+
+<p>A vessel that goes quiet leaves <code>ais_targets</code> but is never
+forgotten by <code>ais_vessel</code>. When she reappears her name and type are
+known at once, instead of reading <em>not reported</em> until her next static
+report &mdash; which can be several minutes away, because position reports
+carry no name.</p>
+
+<p>Positions are stored as degrees &times; 10<sup>6</sup> and speeds as knots
+&times; 10, as integers, exactly as AIS transmits them. Anything reading these
+tables directly must scale before doing arithmetic; treating them as degrees
+makes every vessel appear to move at impossible speed.</p>
+
+<h4>Impossible fixes</h4>
+
+<p>Every field of an AIS position report can be individually legal and the
+report still be nonsense. One observed case placed a vessel steadily making
+7&nbsp;kt on another continent for a single report &mdash; latitude, longitude,
+speed and course all wrong together, back on track two and a half minutes later.
+That is not a flipped bit in one field but a whole frame decoded wrongly, with
+a checksum that passed by luck, and nothing upstream can catch it because every
+value in it is in range. It drew a line several thousand miles across the
+map.</p>
+
+<p>Tracks are therefore filtered <strong>when read, not when written</strong>.
+What the receiver heard stays in the database; what is filtered is what gets
+drawn. Two tests:</p>
+
+<ul>
+  <li><strong>On its own.</strong> A fix outside home waters, or stamped more
+      than five minutes in the future, is dropped. Both of the bad rows found
+      in two days of traffic failed this test alone &mdash; one was at
+      latitude exactly 0, dated four months ahead.</li>
+  <li><strong>Against its neighbours.</strong> A fix is dropped for implied
+      speed only when dropping it <em>restores</em> a plausible speed between
+      the fixes either side. A genuine jump &mdash; a receiver restart, a long
+      gap in reception &mdash; keeps every fix, because there is no continuity
+      to restore.</li>
+</ul>
+
+<p>That asymmetry is deliberate. The failure to avoid is a gate that decides a
+track is wrong and discards the rest of it. Dropped fixes are counted and
+reported in the API response, never silently discarded. Measured over two days
+and 973,193 fixes, this rejects two.</p>
+
+<h3 id="ais-match">5.17 Matching transmissions to vessels</h3>
+
+<p>Deciding whether a transmission names a vessel AIS can see is harder than it
+sounds. Vessels rarely repeat their name, transcripts are imperfect, and many
+boats are called things like <em>Serenity</em> or <em>Liberty</em> that occur
+constantly in ordinary speech. <code>ais_match.py</code> weighs several signals
+at once:</p>
+
+<table>
+  <tr><th>Signal</th><th>What it contributes</th></tr>
+  <tr><td>Rarity</td>
+      <td>How often the name&rsquo;s words appear across every transcript ever
+          recorded. <em>Odyssey</em> needs less corroboration than
+          <em>Pacific</em>. The frequency table is built from the whole
+          history, not the recent window &mdash; a word that looks rare in
+          three thousand messages is often common in thirty-seven
+          thousand.</td></tr>
+  <tr><td>Position in the sentence</td>
+      <td>Names are addressed or announced at particular points &mdash; after a
+          preamble, in the vocative. The same word mid-sentence is doing
+          something else.</td></tr>
+  <tr><td>Phonetics</td>
+      <td><em>MSC Shay</em> and <em>MSC Shea</em> are one ship badly heard.
+          Soundex catches what exact matching cannot.</td></tr>
+  <tr><td>Prefixes</td>
+      <td><em>MV PACIFIC</em> and <em>PACIFIC</em> are the same vessel. Bare
+          <em>Pacific</em> usually is not, so a two-word floor applies.</td></tr>
+  <tr><td>Exceptions</td>
+      <td>Place names that are also vessel names, and distinctive names that
+          should always tag.</td></tr>
+</table>
+
+<p>The bias is deliberately towards tagging. A wrong name is visible at a
+glance; a missed hail is not.</p>
+
+<h3 id="dsc">5.18 DSC on Ch70</h3>
+
+<p>Ch70 carries digital selective calling rather than voice: the short data
+bursts that precede a working-channel exchange. <code>dsc_decode.py</code>
+decodes them, so the call appears in the log with the conversation that
+follows instead of being heard as noise.</p>
+
+<p>A DSC exchange names two ships &mdash; sender and addressee &mdash; and both
+usually have AIS positions, so calls are stored per vessel rather than per
+call. Keyed on the call alone, the table could only ever hold the sender.</p>
+
+<p>This decoder is third-party and MIT-licensed. The licence travels with it as
+<code>dsc_decode.LICENSE</code> and must stay with any copy.</p>
+
 <!-- ========================================================= -->
 <h2 id="files">6. Files</h2>
 
@@ -2043,6 +2179,16 @@ interesting.</p>
   <tr><th>File</th><th>Purpose</th></tr>
   <tr><td><code>watchkeeper.py</code></td><td>The receiver. DSP, squelch, recording, transcription, storage.</td></tr>
   <tr><td><code>webui.py</code></td><td>The web interface. Reads the database, serves port 8080.</td></tr>
+  <tr><td><code>ais_ingest.py</code></td>
+      <td>AIS reception. Reads NMEA 0183 over the network and maintains the
+          live target picture, the permanent vessel identities and the
+          position history. Its own service, independent of the receiver.</td></tr>
+  <tr><td><code>ais_match.py</code></td>
+      <td>Decides whether a transcript names a vessel AIS can see. See
+          <a href="#ais-match">&sect;5.17</a>.</td></tr>
+  <tr><td><code>dsc_decode.py</code></td>
+      <td>Ch70 DSC decoding. Third-party, MIT-licensed; the licence travels
+          with it as <code>dsc_decode.LICENSE</code>.</td></tr>
   <tr><td><code>watchkeeper.toml</code></td><td>All configuration: presets, channels, thresholds.</td></tr>
   <tr><td><code>docs.html</code></td><td>This document.</td></tr>
   <tr><td><code>brief_prompt.txt</code></td>
@@ -2065,6 +2211,9 @@ alongside the programs so they travel with the rest of the software.</p>
   <tr><th>File</th><th>Purpose</th></tr>
   <tr><td><code>watchkeeper@.service</code></td><td>Starts the receiver at boot. See <a href="#boot">Running at boot</a>.</td></tr>
   <tr><td><code>watchkeeper-web@.service</code></td><td>Starts the web interface at boot.</td></tr>
+  <tr><td><code>ais-ingest@.service</code></td>
+      <td>Starts AIS reception at boot. Runs <code>nice</code>d and at idle I/O
+          priority: the watch gets the CPU first.</td></tr>
 </table>
 
 <h3>Tools</h3>
@@ -2526,6 +2675,100 @@ against 6 for a single open tab. Audio is excluded, as are partial
 
 <p>That same polling rate is why <a href="#usagepage">usage</a> is recorded as
 sessions rather than as one row per request.</p>
+
+<h3 id="mappage">The map &mdash; /map</h3>
+
+<p>Where the radio and AIS meet. Two modes, chosen with the toggle in the
+bar:</p>
+
+<ul>
+  <li><strong>Messages</strong> &mdash; tagged transmissions as pins. Click one
+      to read what was said around it on the same channel.</li>
+  <li><strong>Vessels</strong> &mdash; every vessel currently moving, as a
+      heading arrow coloured by speed over ground. This is the default.</li>
+</ul>
+
+<p>The base layer switches between satellite imagery and NOAA ENC charts. The
+chart source is external; when it is unreachable the imagery still works.</p>
+
+<h4>The timeline</h4>
+
+<p>The slider along the bottom scrubs the last 24 hours. Drag it and the fleet
+moves to where it was at that moment, interpolated between recorded fixes;
+press play and it runs at 60&times;. <em>live</em> returns to now.</p>
+
+<p>Positions for a scrubbed moment are computed on the Pi, not in the browser.
+Shipping every track to the page would be about 890&nbsp;KB a day of vessels
+you are not looking at, and thinning the fixes does not help: with roughly
+3.8&nbsp;minutes between reports there is nothing redundant to throw away.</p>
+
+<p>Selecting a vessel draws her track, coloured by the same speed scale, with
+gaps in reception drawn dashed rather than joined up as legs she did not
+sail.</p>
+
+<h4>Measure</h4>
+
+<p>Desktop only &mdash; it measures to the pointer, and a finger has no hover
+position. Toggle it on, click to drop a pin, and the distance and true bearing
+to the cursor are read out continuously: nautical miles, or yards under a tenth
+of a mile, because <em>0.08&nbsp;nm</em> is not a useful number and
+<em>160&nbsp;yd</em> is. Clicking again re-anchors; <kbd>Esc</kbd> or the
+toggle clears it.</p>
+
+<p>The pin is a position rather than a pixel, so panning and zooming leave it
+on the water. Distances are great-circle on a sphere of mean radius
+3440.065&nbsp;nm; over the few miles this is used for, the difference from a
+proper ellipsoidal distance is under a metre.</p>
+
+<h4>The side log</h4>
+
+<p>Tails live: the newest hundred lines, scrolled to the bottom, with new
+traffic appending as it arrives. Scroll up to read something and it holds your
+place rather than dragging you back down.</p>
+
+<p>A dropdown chooses the source &mdash; all channels, one channel, only the
+selected vessel&rsquo;s tagged traffic, or nothing at all. Clicking a pin holds
+the panel on that exchange; <em>live</em> releases it. Scrubbing or playing
+shows the moment instead, and returns to tailing when you come back to
+now.</p>
+
+<p>While a recording is playing the panel does not rebuild, because rebuilding
+it would stop the audio. New lines are still taken in; they appear a tick
+later.</p>
+
+<h4>Staying current</h4>
+
+<p>The page polls a watermark endpoint every ten seconds &mdash; two
+<code>MAX()</code> queries, around 0.3&nbsp;ms &mdash; and only when something
+has actually changed does it fetch a delta holding just the vessels that
+reported and the transcripts that are new.</p>
+
+<p>The naive alternative was measured and rejected: a full payload is
+5.9&nbsp;MB and 360&nbsp;ms, which once a minute is 344&nbsp;MB an hour on a
+four-core Pi already running ten software receivers. The web side competing
+for CPU is precisely what makes the DSP drop frames. Polling stops while the
+replay is running, while the clock is parked in the past, and while the tab is
+hidden.</p>
+
+<h3 id="aispage">AIS targets &mdash; /ais</h3>
+
+<p>Every vessel AIS can see, with range and bearing from the boat, sortable,
+with a filter box. Vessels whose last report is old can be hidden.</p>
+
+<p><strong>Favourites.</strong> The star pins a vessel. Favourites are kept in
+the database rather than the browser, so they are the same on the phone, the
+tablet at the nav station and the laptop. A pinned vessel that is close and
+moving raises a proximity note in the log.</p>
+
+<p><strong>Custom types.</strong> AIS ship type is a code the vessel broadcasts
+about herself. It is often missing, sometimes wrong, and never says the thing
+you actually want to know &mdash; that this one is a buddy boat, or the harbour
+patrol. Click a pinned vessel&rsquo;s type to replace it with your own words.
+Your label replaces the broadcast type wherever the type is shown, including
+the map; the reported type is kept and appears on hover.</p>
+
+<p>Labels live in their own table rather than on the favourite, so unpinning a
+vessel does not destroy a label you took the trouble to type.</p>
 
 <h3 id="searchpage">Search &mdash; /search</h3>
 <p>Finds text across every transcript in the permanent <code>history</code>

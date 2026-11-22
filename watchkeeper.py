@@ -33,6 +33,7 @@ External:     rtl_sdr (rtl-sdr package)
 import argparse
 import json
 import collections
+import concurrent.futures
 import glob
 import logging
 import os
@@ -411,7 +412,8 @@ WX_PROMPT = (
 
 MARINE_PROMPT = (
     "Securite securite securite, pan pan, mayday, this is the United States "
-    "Coast Guard Sector Los Angeles Long Beach, all stations all stations, "
+    "Coast Guard Sector Los Angeles Long Beach, Coast Guard Sector San "
+    "Diego, all stations all stations, "
     "vessel traffic service, motor vessel, sailing vessel, tug and tow, "
     "switch and answer channel one six, channel two two alpha, channel "
     "one three, bridge to bridge, inbound, outbound, Angels Gate, Queens "
@@ -1924,6 +1926,13 @@ class SdrSource:
         self.center_hz = center_hz
         self.chunk_bytes = int(SDR_SAMPLE_RATE * CHUNK_SECONDS) * 2
         self.q: "queue.Queue[bytes]" = queue.Queue(maxsize=queue_depth)
+        # Filled in by the DSP loop so a drop can say whether the loop
+        # was working too hard or waiting for a core. Plain floats, read
+        # and written without a lock: a torn read costs one imprecise
+        # diagnostic line and nothing else.
+        self.load_busy = 0.0
+        self.load_cpu = 0.0
+        self.load_open = ""
         self.dropped_chunks = 0
         self.proc = None
         self._stop = threading.Event()
@@ -2007,8 +2016,14 @@ class SdrSource:
                     self.dropped_chunks += 1
                     if self.dropped_chunks % 20 == 1:
                         log.warning(
-                            "DSP behind real time: dropped %d chunks (%.1f s of audio)",
+                            "DSP behind real time: dropped %d chunks (%.1f s of "
+                            "audio); last 10 s: busy %.2f realtime (cpu %.2f, "
+                            "starved %.2f), queue %d/%d%s",
                             self.dropped_chunks, self.dropped_chunks * CHUNK_SECONDS,
+                            self.load_busy, self.load_cpu,
+                            max(0.0, self.load_busy - self.load_cpu),
+                            self.q.qsize(), self.q.maxsize,
+                            ", open " + self.load_open if self.load_open else "",
                         )
                 except queue.Empty:
                     pass
@@ -2125,6 +2140,157 @@ def quality_score(flat):
                          (FLATNESS_NOISE - FLATNESS_SPEECH) * 100.0, 0.0, 100.0))
 
 
+# ---------------------------------------------------------------------------
+# Channel 70
+# ---------------------------------------------------------------------------
+DSC_MIN_S = 1.7            # decode_file() rejects under 1.5; leave headroom
+
+
+def decode_dsc(path, audio):
+    """Decode one Ch70 burst. Returns the decoder's dict, or None.
+
+    Never raises. This runs inside the receive path, and no third-party
+    decoder gets to interrupt the watch because it met audio it disliked.
+    """
+    tmp = None
+    try:
+        import numpy as _np
+        import soundfile as _sf
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import dsc_decode
+        from pathlib import Path
+
+        src = path
+        # Pad a COPY. The archived recording stays exactly as received.
+        if audio.size < DSC_MIN_S * AUDIO_RATE:
+            pad = int(DSC_MIN_S * AUDIO_RATE) - audio.size
+            tmp = path + ".padded.wav"
+            _sf.write(tmp, _np.concatenate(
+                [audio, _np.zeros(pad, dtype=audio.dtype)]),
+                AUDIO_RATE, subtype="PCM_16")
+            src = tmp
+        return dsc_decode.decode_file(Path(src))
+    except Exception as exc:                            # noqa: BLE001
+        log.warning("DSC decode failed on %s: %s", os.path.basename(path), exc)
+        return None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _dsc_text(v):
+    """Pull a readable name out of the decoder's {symbol, name} shapes."""
+    if isinstance(v, dict):
+        for k in ("name", "text", "value", "symbol"):
+            if v.get(k) is not None:
+                return str(v[k])
+        return None
+    return None if v is None else str(v)
+
+
+def _dsc_comms(v):
+    """The subsequent-communications element, in words.
+
+    _dsc_text() looks for name/text/value/symbol keys. The decoder's
+    communication dict has none of them -- it is
+    {"kind": ..., "primary": {...}, "secondary": {...}, "elements": [...]}
+    -- so every comms column has been NULL since the table was created,
+    and the working channel of every voice call request was thrown away.
+    The channel is the whole point of such a call: it says where the
+    conversation is about to happen.
+    """
+    if not isinstance(v, dict):
+        return _dsc_text(v)
+    parts = []
+    for key in ("primary", "secondary"):
+        e = v.get(key)
+        if not isinstance(e, dict):
+            continue
+        if e.get("channel") is not None:
+            parts.append("channel %s" % e["channel"])
+        elif e.get("frequency") is not None:
+            parts.append("%s" % e["frequency"])
+        else:
+            t = _dsc_text(e)
+            if t:
+                parts.append(t)
+    if not parts:
+        t = _dsc_text(v.get("kind"))
+        return t or None
+    # The same channel twice (an element repeated for error detection)
+    # is one channel, not two.
+    seen = []
+    for p in parts:
+        if p not in seen:
+            seen.append(p)
+    return ", ".join(seen)
+
+
+def _dsc_time(v):
+    """The sender's own clock, as HH:MM.
+
+    The decoder hands back {"raw": "0131", "valid": True, "hour": 1,
+    "minute": 31} -- no name or value field, so _dsc_text found nothing in
+    it and every utc came back NULL. Hence its own helper.
+    """
+    if not isinstance(v, dict) or v.get("valid") is False:
+        return None
+    h, m = v.get("hour"), v.get("minute")
+    if h is None or m is None:
+        return _dsc_text(v.get("raw"))
+    try:
+        return "%02d:%02d" % (int(h), int(m))
+    except (TypeError, ValueError):
+        return None
+
+
+def dsc_fields(call):
+    """Flatten one call into the typed columns, defensively.
+
+    The decoder's per-format message dicts are not identical, so every
+    lookup here tolerates absence. Anything this misses is still in `raw`.
+    """
+    out = {k: None for k in ("fmt", "category", "self_id", "address",
+                             "nature", "lat", "lon", "utc", "comms",
+                             "ecc_ok", "score")}
+    if not isinstance(call, dict):
+        return out
+    out["fmt"] = _dsc_text(call.get("format"))
+    out["category"] = _dsc_text(call.get("category"))
+    out["self_id"] = _dsc_text(call.get("self_id"))
+    out["address"] = _dsc_text(call.get("address"))
+    ecc = call.get("ecc")
+    if isinstance(ecc, dict) and ecc.get("ok") is not None:
+        out["ecc_ok"] = 1 if ecc["ok"] else 0
+    conf = call.get("confidence")
+    if isinstance(conf, dict):
+        try:
+            out["score"] = float(conf.get("score"))
+        except (TypeError, ValueError):
+            pass
+    msg = call.get("message")
+    if isinstance(msg, dict):
+        out["nature"] = _dsc_text(msg.get("nature"))
+        out["utc"] = _dsc_time(msg.get("utc"))
+        out["comms"] = (_dsc_comms(msg.get("communication"))
+                        or _dsc_comms(msg.get("subsequent_communication")))
+        pos = msg.get("position")
+        # valid=False is the sender transmitting 9999999999, "position not
+        # available". Guard on it: a decoder that also filled latitude with
+        # 0.0 would otherwise put the casualty on Null Island.
+        if isinstance(pos, dict) and pos.get("valid") is not False:
+            for a, b in (("lat", "latitude"), ("lon", "longitude")):
+                v = pos.get(a, pos.get(b))
+                try:
+                    out[a] = float(v)
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
 def soc_temperature():
     """SoC temperature in degrees C, or None where it cannot be read."""
     try:
@@ -2225,6 +2391,13 @@ class FileSource:
                 f"{SDR_SAMPLE_RATE}; the channel offsets would be wrong")
         self.chunk_bytes = int(SDR_SAMPLE_RATE * CHUNK_SECONDS) * 2
         self.q: "queue.Queue[bytes]" = queue.Queue(maxsize=queue_depth)
+        # Filled in by the DSP loop so a drop can say whether the loop
+        # was working too hard or waiting for a core. Plain floats, read
+        # and written without a lock: a torn read costs one imprecise
+        # diagnostic line and nothing else.
+        self.load_busy = 0.0
+        self.load_cpu = 0.0
+        self.load_open = ""
         self.dropped_chunks = 0
         self._stop = threading.Event()
         self._thread = None
@@ -2421,6 +2594,12 @@ class ChannelReceiver:
         preroll_frames = int(pre_s * 1000 / GATE_FRAME_MS)
         self.preroll = collections.deque(maxlen=max(1, preroll_frames))
         self.msg_audio = []
+        # Running length of msg_audio in samples. Kept beside the list
+        # because the gate tests it once per 10 ms frame, and summing
+        # the list there makes a long transmission quadratic in its own
+        # length -- which is exactly when the capture can least afford
+        # it. Maintained at every assignment, append and clear below.
+        self.msg_samples = 0
         self.msg_start_sample = 0
         self.msg_peak = 0.0
         self.msg_snr_sum = 0.0
@@ -2589,6 +2768,7 @@ class ChannelReceiver:
                     self.opens += 1
                     self.quiet_frames = 0
                     self.msg_audio = list(self.preroll)
+                    self.msg_samples = sum(x.size for x in self.msg_audio)
                     self.preroll.clear()
                     frames_back = len(self.msg_audio)
                     self.msg_start_sample = max(
@@ -2599,6 +2779,7 @@ class ChannelReceiver:
                 continue
 
             self.msg_audio.append(a)
+            self.msg_samples += a.size
             self.msg_frames += 1
             self.msg_snr_sum += p - (self.floor_dbfs if self.floor_dbfs is not None
                                      else AM_SQUELCH_DBFS)
@@ -2610,7 +2791,7 @@ class ChannelReceiver:
             else:
                 self.quiet_frames = 0
 
-            total = sum(x.size for x in self.msg_audio)
+            total = self.msg_samples
             if (self.quiet_frames >= self.am_hang_limit
                     or total >= MAX_MESSAGE_S * AUDIO_RATE):
                 msg = self._close(snr_is_db=True)
@@ -2674,6 +2855,7 @@ class ChannelReceiver:
                     self.state = "speech"
                     self.quiet_frames = 0
                     self.msg_audio = list(self.preroll)
+                    self.msg_samples = sum(x.size for x in self.msg_audio)
                     self.preroll.clear()
                     frames_back = len(self.msg_audio)
                     self.msg_start_sample = max(
@@ -2693,6 +2875,7 @@ class ChannelReceiver:
                                     dtype=np.float32)
             self.mute_gain = target
             self.msg_audio.append(a)
+            self.msg_samples += a.size
             self.msg_frames += 1
             self.msg_snr_sum += nz
             if a.size:
@@ -2705,7 +2888,7 @@ class ChannelReceiver:
                     self.gaps.append(self.quiet_frames * GATE_FRAME_MS / 1000.0)
                 self.quiet_frames = 0
 
-            total = sum(x.size for x in self.msg_audio)
+            total = self.msg_samples
             long_enough = total >= TARGET_MESSAGE_S * AUDIO_RATE
             if ((self.quiet_frames >= self.quiet_limit and long_enough)
                     or total >= MAX_MESSAGE_S * AUDIO_RATE):
@@ -2740,6 +2923,7 @@ class ChannelReceiver:
 
         self.quiet_frames = 0
         self.msg_audio = []
+        self.msg_samples = 0
         self.preroll.clear()
 
         if audio.size < MIN_MESSAGE_S * AUDIO_RATE:
@@ -2911,6 +3095,33 @@ class Calibrator:
             self.antenna_warned = False
 
 
+# How many threads share the per-channel work. Each channel is an
+# independent downconverter -- its own oscillator, its own three
+# decimation stages, its own state -- so they can run side by side, and
+# roughly 90% of the time goes inside scipy's upfirdn, which releases
+# the GIL. Measured: two threads on a two-core box gave 1.97x the
+# throughput of one, which is as close to linear as this gets.
+#
+# Why it matters here: the loop was serial, so the receiver used one
+# core and no more. On a four-core Pi running ten channels that meant
+# one core pegged flat while three sat idle and audio was dropped for
+# want of CPU that was right there -- measured at 1.19x realtime idle,
+# against a budget of 1.0.
+#
+# One core is left for everything else: the transcriber (niced, two
+# threads of its own), the web interface and the AIS ingest. Set
+# WATCHKEEPER_DSP_WORKERS to override; 1 restores the old serial loop
+# exactly, which is also what a single-core box gets.
+def _dsp_workers():
+    try:
+        n = int(os.environ.get("WATCHKEEPER_DSP_WORKERS", "0"))
+    except ValueError:
+        n = 0
+    if n > 0:
+        return n
+    return max(1, min(4, (os.cpu_count() or 2) - 1))
+
+
 class Channelizer:
     def __init__(self, center_hz: int, channels, mode: str = "nfm"):
         self.mode = mode
@@ -2940,6 +3151,15 @@ class Channelizer:
             for c in channels
         ]
         self.chunk_len = chunk_len
+        workers = min(_dsp_workers(), len(self.receivers))
+        # A persistent pool: this runs four times a second for the life
+        # of the process, and spawning threads per chunk would cost more
+        # than it saves.
+        self.pool = (concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="dsp")
+            if workers > 1 else None)
+        log.info("DSP: %d channel(s) across %d worker thread(s)",
+                 len(self.receivers), workers)
         self.calibrator = Calibrator(self.receivers, mode)
         if mode == "am" and not self.calibrator.refs:
             log.warning("preset has no reference channels; AM squelch will use "
@@ -2949,9 +3169,19 @@ class Channelizer:
                 rx.floor_dbfs = AM_SQUELCH_DBFS - AM_OPEN_MARGIN_DB
 
     def process(self, iq: np.ndarray, sample_index: int):
+        # The receivers share nothing: each owns its oscillator, its
+        # decimators and their filter history, and its gate state. The
+        # calibrator reads them afterwards, never during. So the only
+        # ordering that matters is of the messages coming out, and
+        # Executor.map preserves the order it was given.
+        if self.pool is None:
+            results = [rx.process(iq, sample_index) for rx in self.receivers]
+        else:
+            results = list(self.pool.map(
+                lambda rx: rx.process(iq, sample_index), self.receivers))
+
         out = []
-        for rx in self.receivers:
-            msgs = rx.process(iq, sample_index)
+        for rx, msgs in zip(self.receivers, results):
             # Reference channels are measurement taps only. If one ever
             # produces a message, that frequency is not empty and the whole
             # calibration is suspect -- so drop the message and say so.
@@ -3047,6 +3277,33 @@ CREATE INDEX IF NOT EXISTS idx_hist_gain    ON history(gain_db);
 # At the default 30 s that is 2,880 rows a day and about 20,000 a week, well
 # under a megabyte. Rows older than thermal_history_days are dropped on the
 # same schedule as message pruning.
+DSC_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dsc (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at  TEXT    NOT NULL,
+    channel     TEXT    NOT NULL,
+    audio_path  TEXT,
+    ok          INTEGER NOT NULL,      -- did anything decode at all
+    reason      TEXT,                  -- why not, when ok = 0
+    fmt         TEXT,                  -- distress / individual / all-ships
+    category    TEXT,
+    self_id     TEXT,                  -- sender MMSI
+    address     TEXT,                  -- addressee MMSI, when selective
+    nature      TEXT,                  -- nature of distress
+    lat         REAL,
+    lon         REAL,
+    utc         TEXT,                  -- the sender's own timestamp
+    comms       TEXT,                  -- subsequent communications
+    ecc_ok      INTEGER,               -- DSC has no CRC; this is the check
+    score       REAL,
+    n_calls     INTEGER,
+    raw         TEXT    NOT NULL       -- the decoder's full JSON, verbatim
+);
+CREATE INDEX IF NOT EXISTS dsc_started ON dsc(started_at);
+CREATE INDEX IF NOT EXISTS dsc_mmsi    ON dsc(self_id);
+"""
+
+
 THERMAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS thermal (
     ts       TEXT    PRIMARY KEY,
@@ -3076,6 +3333,11 @@ MIGRATIONS = [
     ("thermal_wait_s",  "REAL"),    # how long the decode was held for heat
     ("second_transcript", "TEXT"),  # what the second-pass model said, if it ran
     ("positions_json",  "TEXT"),    # adjudicated coordinates, as JSON
+    # Where the RECEIVER was, not what the transcript mentioned. Without
+    # this an exported message cannot say where it was heard.
+    ("own_lat",         "REAL"),
+    ("own_lon",         "REAL"),
+    ("own_pos_src",     "TEXT"),    # live | config
 ]
 
 # The same two columns on the permanent archive. `messages` is a ring that
@@ -3085,6 +3347,9 @@ MIGRATIONS = [
 HISTORY_MIGRATIONS = [
     ("second_transcript", "TEXT"),
     ("positions_json",  "TEXT"),
+    ("own_lat",         "REAL"),
+    ("own_lon",         "REAL"),
+    ("own_pos_src",    "TEXT"),
 ]
 
 
@@ -3100,6 +3365,7 @@ class Store:
             c.executescript(SCHEMA)
             c.executescript(HISTORY_SCHEMA)
             c.executescript(THERMAL_SCHEMA)
+            c.executescript(DSC_SCHEMA)
             have = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
             for name, kind in MIGRATIONS:
                 if name not in have:
@@ -3126,21 +3392,33 @@ class Store:
     def insert(self, msg: Message, started_at: datetime, audio_path: str,
                ctx: dict = None) -> int:
         ctx = ctx or {}
+        # Read the fix once and hand it to both rows through ctx, so the
+        # message and its archive copy cannot disagree about where the
+        # boat was. current_home() returns the cached poll, so this does
+        # not touch the network on the capture path.
+        try:
+            _home = current_home()
+        except Exception:                                   # noqa: BLE001
+            _home = None
+        if _home:
+            ctx = dict(ctx, own_lat=_home[0], own_lon=_home[1],
+                       own_pos_src=_home[2])
         c = self._conn()
         with c:
             cur = c.execute(
                 "INSERT INTO messages (channel, freq_hz, started_at, duration_s,"
                 " snr_db, audio_path, status, created_at, preset, noise_floor_db,"
                 " open_thresh, gain_db, peak_pre_limit, norm_gain, quality,"
-                " soc_temp_c)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " soc_temp_c, own_lat, own_lon, own_pos_src)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (msg.channel, msg.freq_hz, started_at.isoformat(),
                  msg.audio.size / AUDIO_RATE, msg.snr_db, audio_path,
                  "pending", datetime.now(timezone.utc).isoformat(),
                  ctx.get("preset"), ctx.get("noise_floor_db"),
                  ctx.get("open_thresh"), SDR_GAIN,
                  msg.peak_db, msg.norm_gain, msg.quality,
-                 ctx.get("soc_temp_c")),
+                 ctx.get("soc_temp_c"), ctx.get("own_lat"),
+                 ctx.get("own_lon"), ctx.get("own_pos_src")),
             )
         # Archived here rather than at deletion, so nothing is lost to prune,
         # to reconcile after a reboot, or to a raw "delete from messages".
@@ -3167,14 +3445,17 @@ class Store:
                     "INSERT OR IGNORE INTO history (channel, freq_hz,"
                     " started_at, duration_s, snr_db, status, quality,"
                     " gain_db, soc_temp_c, preset, noise_floor_db, norm_gain,"
-                    " peak_pre_limit, archived_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " peak_pre_limit, archived_at, own_lat, own_lon,"
+                    " own_pos_src)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (msg.channel, msg.freq_hz, started_at.isoformat(),
                      msg.audio.size / AUDIO_RATE, msg.snr_db, "pending",
                      msg.quality, SDR_GAIN, ctx.get("soc_temp_c"),
                      ctx.get("preset"), ctx.get("noise_floor_db"),
                      msg.norm_gain, msg.peak_db,
-                     datetime.now(timezone.utc).isoformat()))
+                     datetime.now(timezone.utc).isoformat(),
+                     ctx.get("own_lat"), ctx.get("own_lon"),
+                     ctx.get("own_pos_src")))
         except sqlite3.Error as e:
             log.warning("could not archive %s to history: %s", msg.channel, e)
 
@@ -3219,6 +3500,39 @@ class Store:
         except sqlite3.Error as e:
             log.debug("thermal prune failed: %s", e)
             return 0
+
+    def insert_dsc(self, started_at, channel, path, result):
+        """One row per Ch70 burst, decoded or not."""
+        import json as _json
+        calls = (result or {}).get("calls") or []
+        f = dsc_fields(calls[0] if calls else None)
+        # Store has no _lock. It is thread-safe because _conn() hands
+        # each thread its own connection via threading.local(), which is
+        # how every other write in this class is done. The lock named
+        # here never existed, so each insert raised AttributeError and
+        # the burst was decoded and dropped.
+        c = self._conn()      # Store has no lock; see above
+        with c:
+            c.execute(
+                "INSERT INTO dsc (started_at, channel, audio_path, ok,"
+                " reason, fmt, category, self_id, address, nature, lat, lon,"
+                " utc, comms, ecc_ok, score, n_calls, raw)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                # Full precision: messages.started_at is isoformat() with
+                # microseconds, and the log joins the two on it. Truncating
+                # here meant a live DSC row never matched its transmission.
+                (started_at.isoformat(), channel, path,
+                 1 if calls else 0,
+                 # decode_dsc() returns None only when it raised. A result
+                 # that is present but callless means the decoder ran and
+                 # heard no DSC -- much the commonest case on a live Ch70.
+                 None if calls else (
+                     "decoder_unavailable" if result is None
+                     else (result.get("reason") or "no_dsc_detected")),
+                 f["fmt"], f["category"], f["self_id"], f["address"],
+                 f["nature"], f["lat"], f["lon"], f["utc"], f["comms"],
+                 f["ecc_ok"], f["score"], len(calls),
+                 _json.dumps(result, default=str)))
 
     def set_status(self, row_id: int, status: str, reason: str = None):
         c = self._conn()
@@ -3791,6 +4105,8 @@ class Watchkeeper:
         self.channels = preset["channels"]
         self.mode = preset.get("mode", "nfm")
         self.voice_channels = {c.name for c in self.channels if c.voice}
+        self.dsc_channels = {c.name for c in self.channels
+                             if getattr(c, "role", "") == "dsc"}
         self.gated = 0             # decodes skipped by the pre-transcribe gate
 
         # A typo here fails silently and in the worst possible direction: the
@@ -3975,6 +4291,8 @@ class Watchkeeper:
         last_prune = time.time()
         last_thermal = 0.0
         last_monitor = 0.0
+        _load_busy = _load_cpu = 0.0
+        _load_n = 0
 
         log.info("watching %s (%s): %s", self.preset_name, self.mode.upper(),
                  ", ".join(f"{c.name}@{c.freq_hz/1e6:.3f}" for c in self.channels))
@@ -3994,6 +4312,12 @@ class Watchkeeper:
                 raw = source.q.get()
                 if raw == b"":
                     break
+                # Wall and CPU clocks around the work itself, so a drop
+                # can distinguish a loop that is too slow from one that
+                # was ready and not scheduled. Two clock reads a chunk,
+                # four times a second.
+                _w0 = time.perf_counter()
+                _c0 = time.thread_time()
                 iq = u8_to_complex(raw)
                 for msg in chan.process(iq, sample_index):
                     if not self.monitor:
@@ -4003,6 +4327,18 @@ class Watchkeeper:
                                  msg.channel, msg.audio.size / AUDIO_RATE, msg.snr_db)
                 sample_index += len(iq)
                 ran_clean = True
+                _load_busy += time.perf_counter() - _w0
+                _load_cpu += time.thread_time() - _c0
+                _load_n += 1
+                if _load_n >= int(10.0 / CHUNK_SECONDS):
+                    span = _load_n * CHUNK_SECONDS
+                    source.load_busy = _load_busy / span
+                    source.load_cpu = _load_cpu / span
+                    source.load_open = " ".join(
+                        rx.spec.name for rx in chan.receivers
+                        if rx.state == "speech") or ""
+                    _load_busy = _load_cpu = 0.0
+                    _load_n = 0
 
                 if self.monitor and time.time() - last_monitor >= self.monitor_interval:
                     last_monitor = time.time()
@@ -4182,6 +4518,47 @@ class Watchkeeper:
         dur = msg.audio.size / AUDIO_RATE
         log.info("%-24s %5.1fs snr=%4.1fdB -> row %d",
                  msg.channel, dur, msg.snr_db, row_id)
+
+        if msg.channel in self.dsc_channels:
+            # Not speech. Decode it as signalling and keep the result in its
+            # own table; the message row stays as the recording's receipt.
+            res = decode_dsc(path, msg.audio)
+            try:
+                self.store.insert_dsc(started_at, msg.channel, path, res)
+            except Exception as exc:                    # noqa: BLE001
+                log.warning("could not store DSC result: %s", exc)
+            calls = (res or {}).get("calls") or []
+            # dsc log v2. The `format` field is the DSC format specifier --
+            # who the call is addressed to -- and a distress relay is
+            # addressed to all ships, so logging it made a distress alert
+            # indistinguishable from a routine all-ships call. What separates
+            # them is category (distress/urgency/safety/routine) and the
+            # message kind. Distress and urgency go out at WARNING so they
+            # stand out in the journal and survive a priority filter.
+            for c in calls:
+                f = dsc_fields(c)
+                kind = str((c.get("message") or {}).get("kind")
+                           or f["fmt"] or "call").replace("_", " ")
+                bits = [kind]
+                if f["self_id"]:
+                    bits.append("from " + f["self_id"])
+                if f["address"]:
+                    bits.append("to " + f["address"])
+                if f["nature"]:
+                    bits.append(f["nature"])
+                if f["lat"] is not None and f["lon"] is not None:
+                    bits.append("%.4f,%.4f" % (f["lat"], f["lon"]))
+                if f["utc"]:
+                    bits.append("utc " + f["utc"])
+                line = "DSC %s [%s] %s" % (msg.channel,
+                                           f["category"] or "?",
+                                           " | ".join(bits))
+                if (f["category"] or "").lower() in ("distress", "urgency"):
+                    log.warning("*** %s ***", line)
+                else:
+                    log.info("%s", line)
+            self.store.set_status(row_id, "skipped")
+            return
 
         if msg.channel not in self.voice_channels:
             self.store.set_status(row_id, "skipped")

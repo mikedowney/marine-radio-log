@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-asr_engines.py -- the two-pass transcription layer for Apogee Radio Log.
+asr_engines.py -- the two-pass transcription layer for Radio Log.
 
 Parakeet transcribes everything; medium.en is loaded on demand and runs a
 second pass only where it earns its cost. Measured on 80 clips from this
@@ -328,6 +328,53 @@ _STATION_FIX = re.compile(
     r"(san\s+diego|los\s+angeles|long\s+beach|san\s+francisco|l\.?\s?a\.?)\b",
     re.I)
 _CORRECT = {("guard", "sector")}
+
+
+# Words the decoder has no prior for, anchored on the phrase around them.
+#
+# "Mariner" is how the Coast Guard addresses an unidentified vessel, so it
+# opens a great many transmissions here -- and Parakeet reaches for ordinary
+# English instead. Both substitutes ARE ordinary English, which is why the
+# anchor is the following word rather than the word itself: a mayor is a
+# mayor until he is reporting something on channel 16.
+_MARINER_SLOT = re.compile(
+    r"\b(may[o0]r|manner)\b(?=\s+(?:reporting|requesting|with|hailing|haling)\b)",
+    re.I)
+
+# "haling" is a real verb -- to haul or drag -- and has not been heard on a
+# marine VHF channel in about two centuries. "hailing" is said constantly.
+_HALING = re.compile(r"\bhaling\b", re.I)
+
+
+def _match_case(word, model):
+    """Keep the decoder's capitalisation: it marks the start of a sentence."""
+    if model[:1].isupper():
+        return word[:1].upper() + word[1:]
+    return word.lower()
+
+
+def correct_vocabulary(text):
+    """Repair domain words the decoder substitutes ordinary English for.
+
+    Returns (text, fixes), like correct_station. Each fix is
+    (original, replacement) so the caller can flag it -- these are
+    inferences from context, and they are never applied silently.
+    """
+    if not text:
+        return text, []
+    fixes = []
+
+    def mariner(m):
+        fixes.append((m.group(0), "Mariner"))
+        return _match_case("Mariner", m.group(0))
+
+    def haling(m):
+        fixes.append((m.group(0), "hailing"))
+        return _match_case("hailing", m.group(0))
+
+    text = _MARINER_SLOT.sub(mariner, text)
+    text = _HALING.sub(haling, text)
+    return text, fixes
 
 
 def correct_station(text):
@@ -823,6 +870,14 @@ class Engines:
         self.second_pass_min_s = (
             float(second_pass_min_s) if second_pass_min_s is not None
             else float(getattr(wk, "SECOND_PASS_MIN_S", 2.5)))
+        # Ceiling, which the floor above never had. medium.en costs about
+        # 1.5x real time (see this file's header), so a 391 s bulletin is a
+        # ~10 minute decode -- long enough to swap the Pi and make the DSP
+        # drop live audio. 120 s caps one second pass at roughly 3 minutes
+        # of CPU. Set SECOND_PASS_MAX_S in watchkeeper.py to change it;
+        # 0 disables the ceiling.
+        self.second_pass_max_s = float(
+            getattr(wk, "SECOND_PASS_MAX_S", 120.0))
         self.log = log
         self._pk = None
         self._wh = None
@@ -1152,6 +1207,11 @@ class Engines:
                 '(%d mention%s)'
                 % (_station_fixes[0][0], len(_station_fixes),
                    "" if len(_station_fixes) == 1 else "s"))
+        res.text, _vocab_fixes = correct_vocabulary(res.text)
+        if _vocab_fixes:
+            res.flags.append(
+                'vocabulary corrected: %s'
+                % ", ".join('"%s" -> "%s"' % f for f in _vocab_fixes[:3]))
         res.text, _freq_fixes = normalise_frequency(res.text)
         if _freq_fixes:
             res.flags.append(
@@ -1161,11 +1221,21 @@ class Engines:
                    else " (+%d more)" % (len(_freq_fixes) - 1)))
         primary_pos = self._positions(res.text)
 
-        if needs_coordinate_pass(res.text):
+        _dur_s = len(audio) / float(sr)
+        _over = bool(self.second_pass_max_s
+                     and _dur_s > self.second_pass_max_s)
+        if needs_coordinate_pass(res.text) and not _over:
             res.second_pass, res.second_reason = True, "coordinate candidate"
+        elif needs_coordinate_pass(res.text):
+            # Say so on the row. A silent skip would be indistinguishable
+            # from a clip that simply had no coordinate in it.
+            res.flags.append(
+                "second pass skipped: %.0f s exceeds the %.0f s ceiling"
+                " (~%.0f s of CPU; the receiver drops live audio while it"
+                " runs)" % (_dur_s, self.second_pass_max_s, _dur_s * 1.49))
         elif (self.second_pass_on_empty and is_empty_result(res.text)
-              and readable
-              and len(audio) / float(sr) >= self.second_pass_min_s):
+              and readable and not _over
+              and _dur_s >= self.second_pass_min_s):
             res.second_pass, res.second_reason = True, "nothing from readable audio"
 
         if not res.second_pass:

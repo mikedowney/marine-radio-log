@@ -47,6 +47,17 @@ keeping a watch on 16.
   happily emits `[engine revving]`, `Thanks for watching!` and endless repeats
   of the last phrase on noisy input. Six classes of that are stripped without
   discarding the real words around them.
+- **AIS, and vessels named in the log.** The receiver takes an AIS feed and
+  keeps a live picture of what is around you. Transmissions are matched against
+  it by name, so a hail reads *RESOLUTE* rather than an unattributed voice. See
+  [AIS, DSC and the map](#ais-dsc-and-the-map).
+- **A chart with the traffic on it.** Tagged transmissions as pins, every
+  moving vessel as a heading arrow coloured by speed, a 24-hour replay you can
+  scrub or play back at 60×, a distance tool, and a side log that tails live.
+- **DSC decoding on Ch70**, so the digital calls that precede a voice exchange
+  are logged with it rather than heard as a burst of noise.
+- **Favourites and proximity alerts.** Pin the vessels you care about; the log
+  tells you when one of them is close and moving.
 - **A thermal report**, because on a Pi this is a thermal problem as much as a
   radio one. See below.
 - **A usage log**, for when you have handed the link to other people: unique
@@ -312,6 +323,7 @@ python3 -m venv ~/venv_wx
 
 # 4. The program files
 cp watchkeeper.py webui.py asr_engines.py docs.html refresh.sh brief_prompt.txt ~/
+cp ais_ingest.py ais_match.py dsc_decode.py ~/     # optional: AIS and DSC
 cp watchkeeper.example.toml ~/watchkeeper.toml      # then edit it
 
 # 5. Recordings in RAM, to spare the SD card
@@ -347,6 +359,30 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now watchkeeper@$USER watchkeeper-web@$USER
 journalctl -u watchkeeper@$USER -f
 ```
+
+If you want AIS as well — the vessel names, the map and the proximity
+alerts — enable its service too. It is deliberately separate: it reads NMEA
+over the network and never touches the radio, so it can be added, restarted or
+left out without disturbing capture.
+
+```bash
+sudo cp systemd/ais-ingest@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ais-ingest@$USER
+```
+
+It takes no configuration in `watchkeeper.toml`. By default it listens for the
+source's UDP broadcast on port 11101 and then connects to it on TCP 11102; if
+yours does not announce itself, give it the address directly:
+
+```bash
+python3 ~/ais_ingest.py --host 192.168.1.50
+```
+
+`--selftest` checks the decoder without a live feed, and `--once N` runs for N
+seconds and exits, which is the quick way to confirm sentences are arriving
+before enabling the service. With no feed at all the radio side behaves
+exactly as it does without AIS installed.
 
 The units are templated on the username, so `watchkeeper@pi` and
 `watchkeeper@yourname` both work without editing paths.
@@ -556,6 +592,134 @@ you want the location columns.
 
 ---
 
+## AIS, DSC and the map
+
+The radio tells you what was said. AIS tells you who was there. Putting the two
+together is most of what makes this more useful than a scanner.
+
+### Where the AIS comes from
+
+`ais_ingest.py` reads NMEA 0183 sentences over the network — from a PredictWind
+DataHub, a Signal K server, a dedicated receiver, anything that broadcasts
+them — and maintains three stores:
+
+| Table | Holds | Lifetime |
+|---|---|---|
+| `ais_targets` | the live picture: position, speed, course, type | dropped 2 h after last heard |
+| `ais_vessel` | identity: MMSI, name, ship type | permanent |
+| `ais_track` | position history, for drawing tracks and the replay | the rolling window |
+
+The split matters. A vessel that goes quiet leaves `ais_targets` but is never
+forgotten by `ais_vessel`, so when she reappears her name and type are known
+immediately rather than waiting for her next static report, which can be
+several minutes away.
+
+Positions arrive as degrees × 10⁶ integers and speeds as knots × 10, exactly as
+AIS transmits them, rather than being converted on the way in.
+
+### Impossible fixes
+
+Every field of an AIS position report can be individually legal and the report
+still be nonsense: one observed case put a vessel making 7 kt on another
+continent for a single report, with latitude, longitude, speed and course all
+wrong together, and back on track two minutes later. A checksum that passes by
+luck will do that, and nothing upstream can catch it because every value is in
+range.
+
+Tracks are therefore filtered **when read, not when written** — the recorded
+data stays as it was received. Two tests: a fix outside home waters or stamped
+in the future is dropped on its own; a fix is dropped for implied speed only
+when dropping it *restores* a plausible speed between the fixes either side. A
+genuine jump — a receiver restart, a long gap in reception — keeps every fix,
+because there is no continuity to restore. Dropped fixes are counted and
+reported, never silently discarded.
+
+Measured against two days of real traffic, this rejects 2 fixes in 973,193.
+
+### Matching transmissions to vessels
+
+`ais_match.py` decides whether a transmission names a vessel that AIS can see.
+This is harder than it sounds: vessels rarely repeat their name, transcripts
+are imperfect, and many boats are called things like *Serenity* or *Liberty*
+that occur constantly in ordinary speech.
+
+The matcher works on several signals at once:
+
+- **Rarity.** How often the name's words appear across every transcript ever
+  recorded. A vessel called *Odyssey* needs less corroboration than one called
+  *Pacific*.
+- **Position in the sentence.** Names are addressed or announced at specific
+  points — a preamble, a vocative — and a word in one of those places is doing
+  something different from the same word mid-sentence.
+- **Phonetic matching.** *MSC Shay* and *MSC Shea* are the same ship badly
+  heard, and Soundex catches that where exact matching does not.
+- **Prefixes.** *MV PACIFIC* and *PACIFIC* are the same vessel, but bare
+  *Pacific* on its own is usually the ocean, so a two-word floor applies.
+- **Explicit exceptions.** Place names that are also vessel names, and
+  distinctive names that should always be tagged.
+
+The deliberate bias is towards tagging: a wrong name is visible at a glance,
+a missed hail is not.
+
+### DSC
+
+`dsc_decode.py` decodes the digital selective calling traffic on Ch70. A DSC
+exchange names two ships — sender and addressee — and both usually have
+positions, so the calls are stored per vessel rather than per call and appear
+in the log alongside the voice exchange that follows them.
+
+This file is third-party, MIT-licensed; see `dsc_decode.LICENSE`.
+
+### The map
+
+Served at `/map`. Two modes, chosen with the toggle in the bar:
+
+- **Messages** — tagged transmissions as pins, click one to read what was said
+  around it.
+- **Vessels** — every vessel currently moving, drawn as a heading arrow
+  coloured by speed over ground. This is the default.
+
+The timeline along the bottom scrubs the last 24 hours. Drag it and the fleet
+moves to where it was at that moment, interpolated between recorded fixes;
+press play and it runs at 60×. Positions for a scrubbed moment are computed
+server-side, because the alternative — shipping every track to the browser — is
+890 KB a day for no benefit.
+
+Selecting a vessel draws her track, coloured by speed, with gaps in reception
+drawn dashed rather than joined up as legs she did not sail.
+
+**Measure** (desktop) drops a pin and reads the distance and true bearing to
+the pointer, in nautical miles, or yards under a tenth of a mile. The pin is a
+position rather than a pixel, so panning and zooming leave it on the water.
+
+**The side log** tails live: the newest 100 lines across all channels, with new
+traffic appending as it arrives. A dropdown chooses the source — all channels,
+one channel, only the selected vessel's tagged traffic, or nothing. Clicking a
+pin holds the panel on that exchange; the live button releases it.
+
+**Custom vessel types.** AIS ship type is a code the vessel broadcasts about
+herself, often missing and sometimes wrong, and it never says the thing you
+actually want to know. Any pinned vessel's type can be replaced with your own
+words — *Buddy boat*, *Harbour patrol* — from the AIS page. The broadcast type
+is kept and shown on hover.
+
+### Keeping it current without melting the Pi
+
+The map used to be a photograph: its data was inlined when the page was served
+and never refreshed. Simply re-fetching on a timer was not an option — a full
+payload measures 5.9 MB and 360 ms on a Pi already running ten software
+receivers, and the web side competing for CPU is exactly what makes the DSP
+drop frames.
+
+So the page polls a watermark endpoint — two `MAX()` queries, 0.3 ms — every
+ten seconds, and only when something has actually changed does it fetch a
+delta containing just the vessels that reported and the transcripts that are
+new. In the quiet case that is about 0.003% of one core. Polling stops while
+the replay is running, while the clock is parked in the past, and while the
+tab is hidden.
+
+---
+
 ## The AI brief (optional, and not offline)
 
 There is one feature that breaks the no-cloud rule, and it is off unless you
@@ -656,6 +820,12 @@ temperature, noise floor — that make a bad hour diagnosable afterwards;
 `corrections` holds what you typed by hand. Search and export both read
 `history`, which is why they reach messages whose audio is long gone.
 
+AIS runs alongside rather than through any of this. `ais_ingest.py` is its own
+service reading NMEA over the network into `ais.db` and the track store, and
+the web interface joins the two worlds at read time — which is why the radio
+keeps working perfectly well with no AIS feed at all, and why the AIS picture
+survives a receiver restart.
+
 `docs.html` is the full operator and maintenance guide covering all of this in
 detail: the signal path, the two decoders, the hallucination filters, the
 quality score, the thermal governor, the CLI, routine administration, and
@@ -722,12 +892,15 @@ link in the settings panel of every page.
 | `watchkeeper.py` | The receiver: DSP, squelch, recording, scheduling, storage |
 | `asr_engines.py` | The two-pass transcription layer: Parakeet, `medium.en`, and the rules that decide which clip gets which |
 | `webui.py` | The web interface — standard library only, no framework |
+| `ais_ingest.py` | AIS reception: NMEA in, the target, vessel and track stores out |
+| `ais_match.py` | Matching transmissions to vessels by name |
+| `dsc_decode.py` | Ch70 DSC decoding. Third-party, MIT — see `dsc_decode.LICENSE` |
 | `watchkeeper.example.toml` | A real configuration with the identifying values replaced. Copy to `watchkeeper.toml`, which is not tracked. |
 | `brief_prompt.txt` | The prompt the AI brief sends. Read at run time — edit it and the next brief uses it. |
 | `docs.html` | Operator and maintenance guide, served at `/docs` |
 | `nightly_recycle.py` | Optional: restarts the receiver when memory is high and the log is idle |
 | `test_dsp.py` | DSP test suite — run after any change to the signal path |
-| `systemd/` | Templated units for running at boot |
+| `systemd/` | Templated units for running at boot, including the optional AIS ingest |
 | `refresh.sh` | Wipes the log and recordings for a clean test |
 
 `webui.py` is self-contained: the pages it serves and the brief's client
