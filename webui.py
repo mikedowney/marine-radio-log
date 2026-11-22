@@ -4397,20 +4397,35 @@ const chEl = document.getElementById('ch');
 let terms = [];
 
 function esc(s) {
-  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',
-    '"':'&quot;',"'":'&#39;'}[c]));
+  // String() like the other four copies of this on the other pages:
+  // every caller here happens to pass a string today, and the next one
+  // to pass a number or a null should get "7", not a TypeError that
+  // takes the whole result list down.
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function rx(t) { return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 // Highlight on the ESCAPED text, so a transcript containing "<" cannot
 // inject markup and the <mark> tags we add are the only ones present.
 function highlight(text) {
-  let h = esc(text);
-  for (const t of terms) {
-    if (!t) continue;
-    h = h.replace(new RegExp('(' + rx(esc(t)) + ')', 'gi'), '<mark>$1</mark>');
+  // Marked on the raw text and escaped piece by piece, rather than
+  // escaped first and then searched. Searching the escaped string meant
+  // searching "&amp;" as well, so a one-letter term -- a, m, p, l, t, g
+  // -- could land a <mark> inside an entity and leave "&<mark>a</mark>mp;"
+  // on the page. Each pass could also match inside the tag the pass
+  // before it had inserted.
+  const src = String(text == null ? '' : text);
+  const live = terms.filter(Boolean);
+  if (!live.length) { return esc(src); }
+  const all = new RegExp('(' + live.map(rx).join('|') + ')', 'gi');
+  let out = '', last = 0, m;
+  while ((m = all.exec(src)) !== null) {
+    if (m[0] === '') { all.lastIndex++; continue; }   // never spin
+    out += esc(src.slice(last, m.index)) + '<mark>' + esc(m[0]) + '</mark>';
+    last = m.index + m[0].length;
   }
-  return h;
+  return out + esc(src.slice(last));
 }
 // Deliberately coarse: this sits beside an exact timestamp, so it only has
 // to answer "roughly how long ago" at a glance. Seconds below 90 so a message
@@ -12007,6 +12022,37 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    # A body that was too long to read, or not JSON at all, used to be
+    # reported as "mmsi required" -- which sent whoever was debugging it
+    # looking at the one part of the request that was fine. Each failure
+    # now says what it was.
+    _BODY_MAX = 4096
+
+    def _json_mmsi(self):
+        """(body, mmsi) or (None, None) having already answered."""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > self._BODY_MAX:
+            self._send(413, b'{"error":"body too large"}', "application/json")
+            return None, None
+        raw = self.rfile.read(n) if n else b"{}"
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            self._send(400, b'{"error":"body is not valid JSON"}',
+                       "application/json")
+            return None, None
+        if not isinstance(body, dict):
+            self._send(400, b'{"error":"expected a JSON object"}',
+                       "application/json")
+            return None, None
+        try:
+            return body, int(body["mmsi"])
+        except (KeyError, ValueError, TypeError):
+            self._send(400, b'{"error":"mmsi required, as a number"}',
+                       "application/json")
+            return None, None
+
+
     def _do_POST(self):
         """POST-only: running the brief, and naming an address.
 
@@ -12027,13 +12073,8 @@ class Handler(BaseHTTPRequestHandler):
 
         path = self.path.split("?", 1)[0]
         if path == "/api/ais/favourite":
-            try:
-                n = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
-                mmsi = int(body["mmsi"])
-            except (ValueError, KeyError, TypeError):
-                self._send(400, b'{"error":"mmsi required"}',
-                           "application/json")
+            body, mmsi = self._json_mmsi()
+            if body is None:
                 return
             out = set_favourite(self.data.db_path, mmsi,
                                 bool(body.get("on", True)))
@@ -12044,13 +12085,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/ais/label":
-            try:
-                n = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
-                mmsi = int(body["mmsi"])
-            except (ValueError, KeyError, TypeError):
-                self._send(400, b'{"error":"mmsi required"}',
-                           "application/json")
+            body, mmsi = self._json_mmsi()
+            if body is None:
                 return
             lab = body.get("label")
             if lab is not None and not isinstance(lab, str):
