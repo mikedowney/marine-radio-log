@@ -3687,6 +3687,23 @@ class Store:
 
 # ============================== Transcription ==============================
 
+# Durations are measured on the monotonic clock, never the wall clock.
+#
+# This box keeps no battery-backed time: it boots with whatever the last
+# shutdown left behind and NTP steps it once the network is up, which on
+# a boat can be long after the watch has started. Every interval below
+# is a stopwatch -- how long a decode took, how long we held off for
+# heat, how long since the last prune -- and a stopwatch that can jump
+# backwards stalls the thing it is pacing, while one that jumps forward
+# records a decode that never happened. time.time() is kept for the
+# things that are genuinely points in time: a fix's age, a filename, a
+# row's started_at, anything another process or a later run has to agree
+# with us about.
+def elapsed():
+    """Seconds from an arbitrary origin; immune to the clock being set."""
+    return time.monotonic()
+
+
 class NewestFirstQueue:
     """Transcription queue that serves the most recent message first.
 
@@ -3798,17 +3815,17 @@ class Transcriber(threading.Thread):
         if t is None or t < THERMAL_PAUSE_ABOVE:
             return 0.0
         resume = THERMAL_RESUME_BELOW or (THERMAL_PAUSE_ABOVE - 4.0)
-        start = time.time()
-        while time.time() - start < THERMAL_MAX_WAIT_S and not self._stop.is_set():
+        start = elapsed()
+        while elapsed() - start < THERMAL_MAX_WAIT_S and not self._stop.is_set():
             self._stop.wait(2.0)
             t = soc_temperature()
             if t is None or t <= resume:
                 break
-        waited = time.time() - start
-        if waited > 1.0 and time.time() - self._last_thermal_log > 60:
+        waited = elapsed() - start
+        if waited > 1.0 and elapsed() - self._last_thermal_log > 60:
             log.info("held transcription %.0fs at %.1f C to stay under the "
                      "thermal limit", waited, t if t is not None else -1)
-            self._last_thermal_log = time.time()
+            self._last_thermal_log = elapsed()
         return waited
 
     def _load(self):
@@ -3829,7 +3846,7 @@ class Transcriber(threading.Thread):
                 "pip install 'onnx-asr[cpu,hub]'" % e)
 
         home = current_home()
-        t0 = time.time()
+        t0 = elapsed()
         self.engines = asr_engines.Engines(
             sys.modules[__name__],
             home=(home[0], home[1]) if home else None,
@@ -3862,7 +3879,7 @@ class Transcriber(threading.Thread):
         self.engines._parakeet()
         log.info("primary decoder %s ready in %.1fs; %s loads on demand "
                  "and unloads after %.0fs idle",
-                 PRIMARY_MODEL, time.time() - t0, SECOND_MODEL or MODEL_SIZE,
+                 PRIMARY_MODEL, elapsed() - t0, SECOND_MODEL or MODEL_SIZE,
                  SECOND_IDLE_RELEASE_S)
         # run() does not consult these, but leave them coherent for anything
         # that reaches into the transcriber.
@@ -4008,12 +4025,12 @@ class Transcriber(threading.Thread):
         home = current_home()
         self.engines.home = (home[0], home[1]) if home else None
 
-        t0 = time.time()
+        t0 = elapsed()
         res = self.engines.transcribe(
             audio, sr, readable=readable_ok, prompt=self.prompt,
             on_first=lambda t: self.store.update_transcript_text(
                 row_id, strip_annotations(t)))
-        rtf = (time.time() - t0) / max(dur, 1e-6)
+        rtf = (elapsed() - t0) / max(dur, 1e-6)
 
         # strip_annotations stays: it removes "[MUSIC]" and the like, which
         # costs nothing and is not a phrase filter. Everything else in the
@@ -4288,7 +4305,7 @@ class Watchkeeper:
         stream_start = datetime.now(timezone.utc)
         sample_index = 0
         ran_clean = False
-        last_prune = time.time()
+        last_prune = elapsed()
         last_thermal = 0.0
         last_monitor = 0.0
         _load_busy = _load_cpu = 0.0
@@ -4340,8 +4357,8 @@ class Watchkeeper:
                     _load_busy = _load_cpu = 0.0
                     _load_n = 0
 
-                if self.monitor and time.time() - last_monitor >= self.monitor_interval:
-                    last_monitor = time.time()
+                if self.monitor and elapsed() - last_monitor >= self.monitor_interval:
+                    last_monitor = elapsed()
                     cal = chan.calibrator
                     if not cal.calibrated:
                         tag = "calibrating"
@@ -4385,7 +4402,7 @@ class Watchkeeper:
                         self._floor_db = cal.baseline_power_db
                         self._open_thresh = rx.open_noise
 
-                if not self.monitor and time.time() - last_prune > 60:
+                if not self.monitor and elapsed() - last_prune > 60:
                     # Cheap, and the only warning before writes start failing.
                     # max_messages times the mean recording size has to fit in
                     # the mount; when the mean grows -- a bigger model, more
@@ -4406,15 +4423,15 @@ class Watchkeeper:
                         pass
                     self.store.prune()
                     self.store.prune_thermal(THERMAL_HISTORY_DAYS)
-                    last_prune = time.time()
+                    last_prune = elapsed()
                 # Sampled here rather than on a thread: this loop already runs
                 # continuously, and a sample taken from the thread doing the
                 # work is a sample of the state that work is producing.
                 if (THERMAL_SAMPLE_S > 0
-                        and time.time() - last_thermal >= THERMAL_SAMPLE_S):
+                        and elapsed() - last_thermal >= THERMAL_SAMPLE_S):
                     self.store.add_thermal(soc_temperature(), fan_rpm(),
                                            load_average(), self.jobs.qsize())
-                    last_thermal = time.time()
+                    last_thermal = elapsed()
         finally:
             source.stop()
             if self.monitor:

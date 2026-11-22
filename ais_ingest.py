@@ -848,7 +848,14 @@ def run(host, db, duration=None, tag=True):
     end = time.time() + duration if duration else None
     backoff = 1
     bad_lines = 0          # counted across reconnects, not reset by one
-    last_c = last_p = last_t = time.time()
+    # Monotonic: these three pace commits, prunes and tagging, and this
+    # box has no battery-backed clock -- NTP steps it once the network
+    # comes up, which on a boat can be well after the service started. A
+    # backward step on the wall clock stops all three for the length of
+    # the step, holding uncommitted positions in memory the whole time.
+    # `end` below stays on the wall clock: it is a --duration for test
+    # runs and is never compared against these.
+    last_c = last_p = last_t = time.monotonic()
     while end is None or time.time() < end:
         try:
             if host is None:
@@ -885,7 +892,7 @@ def run(host, db, duration=None, tag=True):
                                 log.warning("unreadable sentence (%d so far): "
                                             "%s: %s", bad_lines,
                                             type(exc).__name__, exc)
-                    now = time.time()
+                    now = time.monotonic()
                     if now - last_c >= COMMIT_EVERY:
                         ing.commit()
                         last_c = now
