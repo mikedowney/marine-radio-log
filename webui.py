@@ -9841,14 +9841,18 @@ function refit() {
 function redraw(doFit) {
   if (sel && !visible().some(t => t.iso === sel.iso && t.ch === sel.ch
                                   && t.mmsi === sel.mmsi)) {
+    // The clicked message is not in the new window or vessel filter, so
+    // the panel cannot stay anchored to it: let go and let the source
+    // dropdown decide what to show, which for a live clock is the tail.
+    //
+    // This used to hide the dropdown and write a note about the message
+    // being out of window. Both are wrong now. The note was overwritten
+    // by the panel's own repaint a moment later and so was never read,
+    // and hiding the control that governs the panel left no way back to
+    // the live log short of reloading the page.
     sel = null;
     stopAudio();
-    ctxSel.style.display = 'none';
-    document.getElementById('logsub').textContent =
-      'click a message on the map';
-    document.getElementById('logbody').innerHTML =
-      '<div id="empty">That message is outside the current window or '
-      + 'vessel filter.</div>';
+    refreshCtx();
   }
   buildMarks();
   trackLegend();       // the arrows are keyed by the same bands
@@ -9860,7 +9864,11 @@ function redraw(doFit) {
   clearScrub();
   if (doFit) refit(); else render();
 }
-winSel.onchange = () => { winH = +winSel.value; fillVessels(); redraw(true); };
+// The window changes what is in scope, not where you are looking. It
+// used to refit, which threw away a view you had zoomed in to set just
+// because you wanted more context in it. The fit button is right there
+// when framing the new data is what you actually want.
+winSel.onchange = () => { winH = +winSel.value; fillVessels(); redraw(false); };
 vesSel.onchange = () => {
   vessel = vesSel.value || null;
   if (scrubT != null) {
