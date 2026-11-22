@@ -26,16 +26,10 @@ transmissions costs nothing but the dead air.
 
 --dry-run reports the decision and changes nothing.
 """
-import argparse, getpass, os, sqlite3, subprocess, sys, time
+import argparse, os, sqlite3, subprocess, sys, time
 
-# The account the watchkeeper services run under. Under cron as root neither
-# the login name nor SUDO_USER is any use, so set WATCHKEEPER_USER there.
-USER = (os.environ.get("WATCHKEEPER_USER")
-        or os.environ.get("SUDO_USER")
-        or getpass.getuser())
-
-DB = os.path.expanduser("~%s/watchkeeper/watchkeeper.db" % USER)
-UNIT = "watchkeeper@%s" % USER
+DB = os.path.expanduser("~downeym/watchkeeper/watchkeeper.db")
+UNIT = "watchkeeper@downeym"
 PATTERN = "watchkeeper.py --preset"
 
 
@@ -56,6 +50,24 @@ def rss_mb():
     except Exception:
         return None
     return None
+
+
+def meminfo():
+    """(MemAvailable MB, swap used MB) from /proc/meminfo, or (None, None).
+
+    RSS alone does not say whether the machine is in trouble. A 5 GB
+    watchkeeper on a quiet box is fine; the same process with 900 MB
+    available and swap in use is the state that preceded both lockouts.
+    """
+    try:
+        v = {}
+        for line in open("/proc/meminfo"):
+            k, _, rest = line.partition(":")
+            v[k] = float(rest.split()[0]) / 1024.0      # kB -> MB
+        swap_used = v.get("SwapTotal", 0.0) - v.get("SwapFree", 0.0)
+        return v.get("MemAvailable"), swap_used
+    except Exception:                                    # noqa: BLE001
+        return None, None
 
 
 def db_state(idle_s):
@@ -84,6 +96,15 @@ def main():
     ap.add_argument("--threshold-mb", type=float, default=4000.0)
     ap.add_argument("--idle-s", type=float, default=1200.0,
                     help="required quiet period, seconds (default 20 min)")
+    ap.add_argument("--urgent-idle-s", type=float, default=300.0,
+                    help="required quiet period when the machine is under "
+                         "memory pressure (default 5 min)")
+    ap.add_argument("--urgent-mb", type=float, default=5000.0,
+                    help="RSS at which the shorter quiet period applies")
+    ap.add_argument("--min-available-mb", type=float, default=2000.0,
+                    help="MemAvailable below this counts as pressure")
+    ap.add_argument("--max-swap-mb", type=float, default=256.0,
+                    help="swap in use above this counts as pressure")
     ap.add_argument("--stamp", default="/var/lib/watchkeeper-recycle.stamp")
     ap.add_argument("--any-time", action="store_true",
                     help="ignore the once-a-day stamp")
@@ -102,22 +123,43 @@ def main():
     if rss is None:
         log("watchkeeper not running -- nothing to do")
         return
-    age, pend = db_state(a.idle_s)
+    avail, swap = meminfo()
+
+    # Why the shorter window applies, in words, so the journal says what the
+    # machine was doing rather than only what the script decided.
+    pressure = []
+    if rss >= a.urgent_mb:
+        pressure.append("RSS %.0f MB" % rss)
+    if avail is not None and avail < a.min_available_mb:
+        pressure.append("only %.0f MB available" % avail)
+    if swap is not None and swap > a.max_swap_mb:
+        pressure.append("%.0f MB of swap in use" % swap)
+    need_idle = a.urgent_idle_s if pressure else a.idle_s
+
+    age, pend = db_state(need_idle)
 
     why = []
     if rss < a.threshold_mb:
         why.append("RSS %.0f MB is under the %.0f MB threshold"
                    % (rss, a.threshold_mb))
-    if age is not None and age >= 0 and age < a.idle_s:
-        why.append("last transmission %.0f s ago, need %.0f s quiet"
-                   % (age, a.idle_s))
+    if age is not None and age >= 0 and age < need_idle:
+        why.append("last transmission %.0f s ago, need %.0f s quiet%s"
+                   % (age, need_idle,
+                      " (shortened: %s)" % ", ".join(pressure)
+                      if pressure else ""))
     if pend is not None and pend > 0:
         why.append("%d transcription(s) still pending" % pend)
     if age == -1.0:
         why.append("database unreadable")
 
+    state = "RSS %.0f MB" % rss
+    if avail is not None:
+        state += ", %.0f MB available" % avail
+    if swap is not None:
+        state += ", %.0f MB swap" % swap
+
     if why:
-        log("skipping restart: %s  [RSS %.0f MB]" % ("; ".join(why), rss))
+        log("skipping restart: %s  [%s]" % ("; ".join(why), state))
         return
 
     if a.dry_run:
@@ -125,8 +167,9 @@ def main():
             % (UNIT, rss, age if age is not None else -1, pend or 0))
         return
 
-    log("restarting %s  [RSS %.0f MB, quiet %.0f s]"
-        % (UNIT, rss, age if age is not None else -1))
+    log("restarting %s  [%s, quiet %.0f s%s]"
+        % (UNIT, state, age if age is not None else -1,
+           "; under pressure: " + ", ".join(pressure) if pressure else ""))
     r = subprocess.run(["systemctl", "restart", UNIT], capture_output=True,
                        text=True)
     if r.returncode != 0:
@@ -139,10 +182,15 @@ def main():
     except OSError as exc:
         log("could not write stamp %s (%s) -- may retry tonight"
             % (a.stamp, exc))
-    time.sleep(20)
+    # The decoder finishes loading at about 31 s, so a sample at 20 s read
+    # the memory before the thing being measured had been allocated.
+    time.sleep(45)
     new = rss_mb()
-    log("restarted; RSS %.0f MB -> %s MB"
-        % (rss, "%.0f" % new if new else "unknown"))
+    new_avail, new_swap = meminfo()
+    log("restarted; RSS %.0f -> %s MB%s"
+        % (rss, "%.0f" % new if new else "unknown",
+           ", %.0f MB available, %.0f MB swap" % (new_avail, new_swap)
+           if new_avail is not None else ""))
 
 
 if __name__ == "__main__":

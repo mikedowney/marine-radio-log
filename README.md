@@ -909,6 +909,7 @@ troubleshooting.
 | `asr_engines.py` | The two-pass transcription layer: Parakeet, `medium.en`, and the rules that decide which clip gets which |
 | `webui.py` | The web interface — standard library only, no framework |
 | `ais_ingest.py` | AIS reception: NMEA in, the target, vessel and track stores out |
+| `ais_decode.py` | The AIS message decoder `ais_ingest.py` reads NMEA with: types 1/2/3 and 18/19 for position, 5 and 24 for name and ship type |
 | `ais_match.py` | Matching transmissions to vessels by name |
 | `dsc_decode.py` | Ch70 DSC decoding. Third-party, MIT — see `dsc_decode.LICENSE` |
 | `watchkeeper.example.toml` | A real configuration with the identifying values replaced. Copy to `watchkeeper.toml`, which is not tracked. |
@@ -945,7 +946,11 @@ path; it should end `all DSP tests passed`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Public domain — see [LICENSE](LICENSE). The author claims no copyright
+in this software; do what you like with it.
+
+One exception: `dsc_decode.py` is third-party and MIT-licensed, and
+keeps its own notice in `dsc_decode.LICENSE`.
 
 Built with [onnx-asr](https://github.com/istupakov/onnx-asr),
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and
