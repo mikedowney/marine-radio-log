@@ -324,6 +324,124 @@ is an input only.</p>
 
 <h3>3.1 The signal path</h3>
 
+<figure>
+<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+<svg viewBox="0 0 900 600" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="The signal path: one dongle, one capture thread, then an
+     independent receiver chain per channel, converging on the shared
+     transcription queue." style="width:100%;height:auto;max-width:900px;min-width:620px">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6"
+    markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--dimmer)"/></marker></defs>
+  <rect x="20" y="24" width="120" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="80.0" y="50.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">antenna</text>
+
+  <line x1="140" y1="46" x2="186" y2="46" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="188" y="24" width="150" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="263.0" y="44.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">RTL-SDR</text>
+  <text x="263.0" y="60.0" text-anchor="middle" fill="var(--dim)" font-size="11">tuned once, 2.048 MSPS</text>
+
+  <line x1="338" y1="46" x2="384" y2="46" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="386" y="24" width="160" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="466.0" y="44.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">capture thread</text>
+  <text x="466.0" y="60.0" text-anchor="middle" fill="var(--dim)" font-size="11">0.25 s chunks</text>
+
+  <line x1="546" y1="46" x2="592" y2="46" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="594" y="24" width="160" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="674.0" y="44.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">queue</text>
+  <text x="674.0" y="60.0" text-anchor="middle" fill="var(--dim)" font-size="11">40 chunks = 10 s</text>
+
+  <line x1="674" y1="68" x2="674" y2="104" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="470" y="106" width="410" height="40" rx="4" fill="var(--panel)" stroke="var(--accent)" stroke-width="1.2"/>
+  <text x="675.0" y="130.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">channelizer &#8212; one receiver per channel, 3 worker threads</text>
+
+  <rect x="20" y="170" width="860" height="196" rx="6" fill="none" stroke="var(--accent)" stroke-width="1" stroke-dasharray="5 4"/>
+
+  <text x="34" y="190" fill="var(--accent)" font-size="11.5" font-weight="600">per channel, independently</text>
+
+  <line x1="674" y1="146" x2="674" y2="170" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="34" y="206" width="120" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="94.0" y="226.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">mix</text>
+  <text x="94.0" y="242.0" text-anchor="middle" fill="var(--dim)" font-size="11">NCO to baseband</text>
+
+  <line x1="154" y1="228" x2="196" y2="228" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="198" y="206" width="132" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="264.0" y="226.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">decimate /16</text>
+  <text x="264.0" y="242.0" text-anchor="middle" fill="var(--dim)" font-size="11">129 taps</text>
+
+  <line x1="330" y1="228" x2="372" y2="228" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="374" y="206" width="132" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="440.0" y="226.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">decimate /4</text>
+  <text x="440.0" y="242.0" text-anchor="middle" fill="var(--dim)" font-size="11">257 taps</text>
+
+  <line x1="506" y1="228" x2="548" y2="228" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+  <text x="527.0" y="219.0" text-anchor="middle" fill="var(--dim)" font-size="10.5">32 kHz</text>
+
+  <rect x="550" y="206" width="150" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="625.0" y="226.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">discriminator</text>
+  <text x="625.0" y="242.0" text-anchor="middle" fill="var(--dim)" font-size="11">FM angle, or AM envelope</text>
+
+  <line x1="700" y1="228" x2="742" y2="228" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="744" y="206" width="122" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="805.0" y="226.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">de-emphasis</text>
+  <text x="805.0" y="242.0" text-anchor="middle" fill="var(--dim)" font-size="11">one pole</text>
+
+  <path d="M805,250 L805,284 L722,284" fill="none" stroke="var(--dimmer)" stroke-width="1.2"/>
+
+  <line x1="722" y1="284" x2="700" y2="284" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="550" y="262" width="150" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="625.0" y="282.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">decimate /2</text>
+  <text x="625.0" y="298.0" text-anchor="middle" fill="var(--dim)" font-size="11">16 kHz audio</text>
+
+  <line x1="550" y1="284" x2="508" y2="284" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="356" y="262" width="150" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="431.0" y="282.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">squelch gate</text>
+  <text x="431.0" y="298.0" text-anchor="middle" fill="var(--dim)" font-size="11">open / hang / close</text>
+
+  <line x1="356" y1="284" x2="314" y2="284" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="164" y="262" width="148" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="238.0" y="282.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">message</text>
+  <text x="238.0" y="298.0" text-anchor="middle" fill="var(--dim)" font-size="11">trimmed, normalised</text>
+
+  <line x1="238" y1="306" x2="238" y2="404" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="150" y="406" width="176" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="238.0" y="426.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">WAV on tmpfs</text>
+  <text x="238.0" y="442.0" text-anchor="middle" fill="var(--dim)" font-size="11">+ database row</text>
+
+  <line x1="326" y1="428" x2="372" y2="428" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="374" y="406" width="190" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="469.0" y="426.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">newest-first queue</text>
+  <text x="469.0" y="442.0" text-anchor="middle" fill="var(--dim)" font-size="11">live first, oldest evicted</text>
+
+  <line x1="564" y1="428" x2="610" y2="428" stroke="var(--dimmer)" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <rect x="612" y="406" width="174" height="44" rx="4" fill="var(--panel)" stroke="var(--line)" stroke-width="1.2"/>
+  <text x="699.0" y="426.0" text-anchor="middle" fill="var(--text)" font-size="12.5" font-weight="600">two-pass ASR</text>
+  <text x="699.0" y="442.0" text-anchor="middle" fill="var(--dim)" font-size="11">Parakeet, then whisper</text>
+
+  <path d="M699,450 L699,486 L238,486 L238,456" fill="none" stroke="var(--dimmer)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+
+  <text x="468" y="502" text-anchor="middle" fill="var(--dim)" font-size="10.5">the row is updated in place; the recording is never rewritten</text>
+
+  <text x="20" y="545" fill="var(--dimmer)" font-size="10.5">Everything left of the queue runs in real time and cannot be allowed to fall behind. Everything right of it may take as long as it needs.</text>
+
+</svg>
+</div>
+<figcaption>The signal path. One dongle and one capture thread feed every channel; each then runs its own chain, independently, before they converge on the shared transcription queue.</figcaption></figure>
+
 <p class="chain">
   <span>antenna</span><i>&rarr;</i><span>RTL-SDR</span><i>&rarr;</i><span><code>rtl_sdr</code></span><i>&rarr;</i><span>raw I/Q, 2.048&nbsp;MSPS</span><i>&rarr;</i><span>channelizer</span><i>&rarr;</i><span>one receiver per channel</span><i>&rarr;</i><span>squelch gate</span><i>&rarr;</i><span>message</span><i>&rarr;</i><span>WAV + database row</span><i>&rarr;</i><span>transcriber</span><i>&rarr;</i><span>web interface</span>
 </p>
