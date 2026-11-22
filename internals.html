@@ -1954,6 +1954,19 @@ track is wrong and discards the rest of it. Dropped fixes are counted and
 returned in the API response rather than vanishing. Over two days and 973,193
 fixes this rejects two.</p>
 
+<p>The newest fix is tested too, and for a while it was not. The neighbour
+test asks whether dropping a fix restores continuity, and the last fix in a
+track has nothing after it to be continuous with, so it was appended
+untested. That left the one spike the filter exists to catch &mdash; the
+newest, the one drawn as where she is <em>now</em> &mdash; the only one it
+could not catch. It is now put through the same test with the continuity
+question answered vacuously: for the last fix the implied speed alone
+decides. A long gap is not caught by that and should not be, because speed is
+distance over elapsed time, so a fix arriving after a three-hour silence
+implies a slow one and passes. Two bad fixes in a row at the end still read
+as a genuine jump and are kept, which is the same conservatism the middle of
+the track gets.</p>
+
 <h3 id="matching">3.18 Matching a transmission to a vessel</h3>
 
 <p><code>ais_match.py</code> decides whether a transcript names a vessel AIS
@@ -2007,6 +2020,54 @@ sender.</p>
 travels with it and must stay with any copy.</p>
 
 <!-- ========================================================= -->
+<h3>3.20 Two clocks</h3>
+
+<p>Durations are measured on the monotonic clock; timestamps are measured on
+the wall clock. The distinction matters here more than it does on a desk,
+because this box keeps no battery-backed time: it boots with whatever the
+last shutdown left behind, and NTP steps it once the network is up &mdash;
+which on a boat can be hours after the watch has started.</p>
+
+<p>Everything that is a stopwatch goes through <code>elapsed()</code>, a thin
+wrapper on <code>time.monotonic()</code>: how long a decode took, how long
+transcription was held off for heat, how long since the last prune, how long
+since the AIS ingest last committed. On the wall clock a backward step stops
+whatever that interval paces for the length of the step &mdash; the thermal
+hold outruns its own maximum, the AIS commit and tag timers stop together and
+hold uncommitted positions in memory &mdash; and a forward step records a
+decode that never happened, because <code>rtf</code> is stored per message
+and shown in the interface.</p>
+
+<p>Everything that is a point in time stays on <code>time.time()</code>: a
+fix's age, a row's <code>started_at</code>, the prune cutoffs, the tagger's
+watermark, a recording's filename. Those have to mean the same thing to
+another process, or to this one after a restart, and a monotonic value means
+nothing outside the process that read it. Both halves of a pair always move
+together: a stopwatch with its start on one clock and its stop on the other
+is worse than either clock alone.</p>
+
+<h3>3.21 One bad sentence, and what it used to cost</h3>
+
+<p>AIS sentences arrive as text over a TCP feed and may be split across
+lines, so the reassembler holds partial groups until every fragment is in.
+It decided they were all in by counting them, which is not the same as having
+them: a group declaring two fragments and carrying numbers 1 and 3 satisfies
+the count and then raises <code>KeyError</code> on the missing one. Over the
+air that is one corrupted character away at any time.</p>
+
+<p>What it cost was out of all proportion to the cause. The exception left
+<code>feed()</code>, unwound through the receive loop to the reconnect
+handler, dropped the connection to the DataHub, backed off, and lost up to
+<code>COMMIT_EVERY</code> seconds of positions that had not been written yet.
+The only trace was a log line reading <code>AIS feed: 2</code>.</p>
+
+<p>Fragment numbers outside <code>1..total</code> are now refused, and the
+join checks it holds each one. The receive loop also guards each line
+separately and counts failures rather than logging one per sentence, so a
+future fault in parsing costs that sentence and not the feed. Forty thousand
+malformed sentences now raise nothing and the reassembler stays under its
+cap.</p>
+
 <h2 id="files">4. Files</h2>
 
 <h3>Programs</h3>
@@ -2101,8 +2162,9 @@ alongside the programs so they travel with the rest of the software.</p>
   <tr><td><code>~/watchkeeper/audio/ais_track.db</code></td>
       <td>SQLite. Every AIS position report as it arrives &mdash; MMSI, time,
           position, speed and course, as scaled integers in a
-          <code>WITHOUT ROWID</code> table at about 30&nbsp;bytes a row, so a
-          full 96&nbsp;hours is roughly 60&nbsp;MB. Swept at 96&nbsp;hours.
+          <code>WITHOUT ROWID</code> table at about 58&nbsp;bytes a row
+          measured, so the full two weeks it keeps is roughly
+          400&nbsp;MB. Swept at 336&nbsp;hours.
           <strong>On tmpfs with the audio — see below.</strong> Feeds the
           tracks on the <a href="#mappage">map</a> and the 96-hour view on the
           AIS page.</td></tr>
@@ -2630,7 +2692,8 @@ tagged transmission.</p>
 
 <p>The list unticked is what the AIS service currently holds, and it drops a
 vessel two hours after her last report. <strong>Show stale</strong> extends it
-to 96&nbsp;hours, which <code>ais_targets</code> cannot answer by itself: those
+to 96&nbsp;hours &mdash; the page asks for <code>?h=96</code>, which is four
+days and not the full fortnight the track holds &mdash; which <code>ais_targets</code> cannot answer by itself: those
 rows are gone. They are rebuilt from <code>ais_track</code> for where she was
 and <code>ais_vessel</code> for who she is, and they carry a last known fix
 with its real age rather than a current position.</p>
@@ -2695,7 +2758,8 @@ hers: her track is fetched and drawn, and she is selected in the dropdown.
 Picking a vessel in the dropdown does the same thing from the other
 direction.</p>
 
-<p>The window is 1, 6, 12, 24, 48 or 96 hours and defaults to 24. The vessel
+<p>The window is 1 or 6 hours, then every 12 hours out to 14 days &mdash; 30
+steps in all &mdash; and defaults to 24. The vessel
 dropdown is rebuilt from whatever was tagged inside the window, so it never
 offers a vessel with nothing to show. Everything after load is client side:
 changing either filter re-filters in place.</p>
@@ -3931,6 +3995,55 @@ empty label, clears a name &mdash; the second unauthenticated write on the
 interface after <a href="#correcting">corrections</a>, and gated by the same
 rule as every other write: see below.</p>
 
+<h3>Data inlined into a page, and why the slash is escaped</h3>
+
+<p>Two pages carry their data in the HTML rather than fetching it: the map,
+whose payload is written into <code>const DATA = &hellip;</code>, and
+<code>transcript.html</code> inside a download, which has to work from a
+file:// URL with no server behind it. Both go through
+<code>_js_json()</code> rather than <code>json.dumps()</code> directly.</p>
+
+<p><code>json.dumps</code> escapes quotes and backslashes but not the forward
+slash, and the HTML parser ends a <code>&lt;script&gt;</code> element at the
+first <code>&lt;/scri&hellip;</code> it sees, wherever that falls &mdash;
+inside a JSON string literal included. Any text in the payload containing
+those characters therefore ended the script early, and everything after it
+was parsed as markup. This is not hypothetical traffic: a vessel's AIS name
+is twenty characters of whatever she chooses to transmit, and
+<code>&lt;/script&gt;&lt;svg/onload</code> is exactly twenty, so a passing
+boat could blank the map. A longer field &mdash; a transcript, a correction,
+a DSC name &mdash; could run script of her choosing, on a page served over
+the funnel.</p>
+
+<p><code>_js_json()</code> escapes the slash as <code>&#92;/</code>. That is
+the same string to a JSON parser, which yields the original text, and no
+closing tag to the HTML parser. <code>ensure_ascii</code> is passed
+explicitly for the other two characters that are legal in JSON and fatal in
+JavaScript source, U+2028 and U+2029.</p>
+
+<h3>What happens when a route fails</h3>
+
+<p>Each route handles what it expects to go wrong. What was missing was
+anything for what it did not: an unhandled exception propagated out of the
+handler, the server logged a traceback and closed the socket, and the
+browser received no response at all &mdash; which reads as the box being
+down rather than one page being broken.</p>
+
+<p>It did not take much to find one. A query string is text, and several
+routes turn it into a number and hand it to SQLite, which has 64-bit
+integers; <code>?hid=99999999999999999999</code> raised
+<code>OverflowError</code> before the row was looked up, and
+<code>mmsi</code>, <code>t</code> and <code>hours</code> did the same
+elsewhere.</p>
+
+<p>Both dispatchers now run through one guard.
+<code>OverflowError</code> and <code>ValueError</code> answer 400, because
+those are a client sending nonsense; anything else answers 500. Neither says
+what broke: these pages are served over the funnel, and a traceback names
+paths and a username. The detail goes to the journal. If a route has already
+started writing a response the guard stays silent, because a second set of
+headers down the same socket is worse than a truncated body.</p>
+
 <h3 id="readonly">Who may change anything</h3>
 
 <p>Reading is not gated. Anyone who can reach the interface can read every
@@ -4436,7 +4549,7 @@ peaks and open counts; <code>rtl_power</code> gives a spectrum survey.</p>
 <!-- ========================================================= -->
 <h2 id="limits">11. Known limits</h2>
 
-<h3 id="trackinglimits">Tracks reach back 96 hours, and not past a reboot</h3>
+<h3 id="trackinglimits">Tracks reach back two weeks, and not past a reboot</h3>
 <p><code>ais_targets</code> is keyed on MMSI and every report overwrites the
 row: one row per vessel, holding her latest fix and nothing before it. That is
 the right shape for &ldquo;where is she now&rdquo;, which is what the ranges
@@ -4445,13 +4558,17 @@ and bearings on the log page need, and on its own it keeps no history at all.
 position report as it arrives, not a sample &mdash; and these are its
 limits.</p>
 
-<p><strong>96 hours, then it is gone.</strong> A sweep deletes anything older.
-There is no archive and no backup: a passage you did not look at within four
-days cannot be recovered.</p>
+<p><strong>Two weeks, then it is gone.</strong> A sweep deletes anything older.
+There is no archive and no backup: a passage you did not look at within a
+fortnight cannot be recovered.</p>
 
 <p><strong>It lives in RAM and does not survive a reboot.</strong> The table is
-on the same tmpfs as the audio ring, to spare the memory card roughly 19,000
-writes an hour. Power loss or a restart empties it, exactly as it does the
+on the same tmpfs as the audio ring, to spare the memory card roughly 20,000
+writes an hour &mdash; the rate measured here. The other side of that bargain
+is RAM: at two weeks and the observed rate the table settles near 400&nbsp;MB
+of memory, so shortening <code>TRACK_HOURS</code> is the lever if the box ever
+needs it back, and <code>MAP_MAX_HOURS</code> in <code>webui.py</code> has to
+come down with it. Power loss or a restart empties it, exactly as it does the
 recordings. The written log and the vessel registry are on the card and
 survive; the track does not.</p>
 
@@ -4581,6 +4698,35 @@ over the tailnet, where that is a reasonable trade; if it is ever published
 through a funnel or forwarded from a router, then anyone holding the URL can
 rewrite transcripts, and the original readings in the
 <code>corrections</code> table are what would let you tell.</p>
+
+<h3>The working set is most of the memory</h3>
+
+<p>The receiver settles at roughly 5.4&nbsp;GB resident on a box with
+7.87&nbsp;GB, and the machine runs with about 1.3&nbsp;GB of swap in use.
+This is a working set, not a leak, and it is worth writing down because it
+looks exactly like one from a distance.</p>
+
+<p>Measured over a 16-hour run, sampled once a minute: 2.85&nbsp;GB at
+start, climbing to about 5.5&nbsp;GB within the first hundred minutes, and
+then flat &mdash; fourteen further hours inside a 683&nbsp;MB band, ending
+where it began. Three quarters of the climb is twelve discrete steps, the
+largest a single 1.69&nbsp;GB jump at ninety-eight minutes, which is the
+second-pass model loading the first time a clip is hard enough to need it.
+Nearly 4&nbsp;GB is returned to the operating system across the run, in
+fifty separate intervals. An allocator that hands memory back is not
+leaking.</p>
+
+<p>What that costs is latency rather than capacity. A process this size on
+this box means the machine is permanently in swap, and on a card-backed swap
+file a page fault in a DSP thread is a stall measured in milliseconds, which
+is one plausible source of the occasional <code>DSP behind real time</code>
+warning. The levers, if the memory is ever wanted back: quantise the
+second-pass model, which is the 1.69&nbsp;GB step;
+<code>MALLOC_ARENA_MAX</code> in the unit file, which with this many threads
+can be worth a few hundred megabytes; and the AIS track's 400&nbsp;MB of
+tmpfs, which is <code>TRACK_HOURS</code>. The nightly restart is not hiding
+a leak &mdash; it buys a few hours below the plateau before the models load
+again.</p>
 
 <h3>Two dongles</h3>
 <p>Channels more than about 800&nbsp;kHz apart cannot share a capture. Watching
