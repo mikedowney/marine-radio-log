@@ -12521,6 +12521,10 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_bundle(int(m.group(1)))
             return
 
+        if path.startswith("/docs/"):
+            self._serve_doc_image(path[len("/docs/"):])
+            return
+
         if path in ("/docs", "/docs.html"):
             self._serve_docs()
             return
@@ -12705,6 +12709,47 @@ class Handler(BaseHTTPRequestHandler):
                              "docs.html")
     INTERNALS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "internals.html")
+
+    # The guide's screenshots. Served rather than inlined as data URIs:
+    # the images come to about 1.5 MB, and over a metered uplink a guide
+    # that costs 2 MB to open is a guide nobody opens. As separate files
+    # the browser fetches them lazily and caches them, and a deployment
+    # that copied only docs.html degrades to the alt text rather than
+    # breaking.
+    DOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "docs")
+    DOC_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                       ".png": "image/png"}
+
+    def _serve_doc_image(self, name):
+        """One file out of docs/, by name only.
+
+        No path of any kind is honoured: the name is reduced to its last
+        component and must match a plain filename, so neither `..` nor an
+        absolute path nor a symlink inside the directory can reach
+        anything else.
+        """
+        name = os.path.basename(name)
+        ext = os.path.splitext(name)[1].lower()
+        if (not name or name.startswith(".")
+                or not re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z]+", name)
+                or ext not in self.DOC_IMAGE_TYPES):
+            self._send(404, b"no such image", "text/plain")
+            return
+        full = os.path.join(self.DOCS_DIR, name)
+        if not os.path.isfile(full):
+            self._send(404, b"no such image", "text/plain")
+            return
+        try:
+            with open(full, "rb") as f:
+                body = f.read()
+        except OSError:
+            self._send(404, b"unreadable", "text/plain")
+            return
+        # They change only when the guide does, so let the browser keep
+        # them rather than re-fetching on every visit.
+        self._send(200, body, self.DOC_IMAGE_TYPES[ext],
+                   {"Cache-Control": "public, max-age=86400"})
 
     def _serve_docs(self, path=None, name="docs.html"):
         try:

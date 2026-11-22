@@ -100,6 +100,17 @@
   footer { margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
     color:var(--dimmer); font-size:13.5px; }
   .toplink { display:inline-block; margin-top:8px; font-size:13px; }
+
+  /* Screenshots. Served from docs/ beside webui.py rather than inlined,
+     and lazily, so the guide costs little to open over a metered link.
+     A deployment missing the folder shows the caption instead. */
+  figure { margin:22px 0; }
+  /* max-width, not width: the narrower shots would otherwise be
+     upscaled past their own pixels and go soft. */
+  figure img { display:block; max-width:100%; height:auto; border-radius:6px;
+    border:1px solid var(--line); background:var(--panel-2); }
+  figcaption { color:var(--dimmer); font-size:13px; margin-top:7px;
+    line-height:1.5; }
 </style>
 </head>
 <body>
@@ -167,6 +178,9 @@ letting go of the button.</p>
 
 <p>Newest is first. The page refreshes itself, so leave it open and it stays
 current.</p>
+
+<figure><img src="docs/main_screen.jpg" loading="lazy" alt="The log: seven voice channels and DSC received at once, newest first. The chip beside the title is a favourite vessel close by and under way.">
+<figcaption>The log: seven voice channels and DSC received at once, newest first. The chip beside the title is a favourite vessel close by and under way.</figcaption></figure>
 
 <h3 id="row">Reading a message</h3>
 
@@ -2638,9 +2652,11 @@ watchkeeper — it opens the database read-only, so it can be started, stopped
 and restarted without disturbing reception.</p>
 
 <h3>The header</h3>
-<p>Live indicator, message counts, and three chips that stay visible with the
+<p>Live indicator, message counts, and the chips that stay visible with the
 settings panel closed: <strong>AUTO</strong> when autoplay is on,
-<strong>THROTTLED</strong> when the Pi is running below full speed, and a red
+<strong>THROTTLED</strong> when the Pi is running below full speed, a teal
+chip naming a <a href="#aispage">favourite vessel</a> that is close by and
+under way &mdash; her name, range and speed &mdash; and a red
 <strong>DISTRESS</strong> when urgent traffic has been heard in the last thirty
 minutes. The last of these is a button &mdash; it jumps to the message, and
 relaxes the filters first if they would have hidden it. See
@@ -2688,6 +2704,9 @@ bar:</p>
       heading arrow coloured by speed over ground. This is the default.</li>
 </ul>
 
+<figure><img src="docs/map_vessels.jpg" loading="lazy" alt="Vessels mode with one selected: her track drawn and coloured by speed, the fleet around her, and the side log following the same traffic.">
+<figcaption>Vessels mode with one selected: her track drawn and coloured by speed, the fleet around her, and the side log following the same traffic.</figcaption></figure>
+
 <p>The base layer switches between satellite imagery and NOAA ENC charts. The
 chart source is external; when it is unreachable the imagery still works.</p>
 
@@ -2719,6 +2738,9 @@ toggle clears it.</p>
 on the water. Distances are great-circle on a sphere of mean radius
 3440.065&nbsp;nm; over the few miles this is used for, the difference from a
 proper ellipsoidal distance is under a metre.</p>
+
+<figure><img src="docs/map_measure.jpg" loading="lazy" alt="Measuring from a dropped pin to the pointer: 15.2 nm, 188 degrees true.">
+<figcaption>Measuring from a dropped pin to the pointer: 15.2 nm, 188 degrees true.</figcaption></figure>
 
 <h4>The side log</h4>
 
@@ -2770,6 +2792,9 @@ the map; the reported type is kept and appears on hover.</p>
 <p>Labels live in their own table rather than on the favourite, so unpinning a
 vessel does not destroy a label you took the trouble to type.</p>
 
+<figure><img src="docs/ais_targets.jpg" loading="lazy" alt="The AIS page. Favourites sort to the top, each showing the type name its owner gave it rather than the code it broadcasts.">
+<figcaption>The AIS page. Favourites sort to the top, each showing the type name its owner gave it rather than the code it broadcasts.</figcaption></figure>
+
 <h3 id="searchpage">Search &mdash; /search</h3>
 <p>Finds text across every transcript in the permanent <code>history</code>
 table, not just the recordings still in the live log. Terms are combined with
@@ -2777,6 +2802,9 @@ AND; a phrase in double quotes matches whole. <code>%</code> and
 <code>_</code> are escaped, so searching <code>100%</code> finds a hundred
 percent rather than everything. A channel filter and the query are both in the
 URL, so a result set can be bookmarked or sent to someone.</p>
+
+<figure><img src="docs/search.jpg" loading="lazy" alt="Searching every transcript ever recorded. The matched term is highlighted, and each row offers the clip, its place in the log, a zip, or the exchange around it.">
+<figcaption>Searching every transcript ever recorded. The matched term is highlighted, and each row offers the clip, its place in the log, a zip, or the exchange around it.</figcaption></figure>
 
 <p>Each result offers <b>play</b>, <b>in log</b> and <b>zip</b> &mdash; but
 only while the recording still exists. Otherwise it reads <em>audio aged
@@ -3052,6 +3080,9 @@ delete its row:</p>
 <p>A form over the endpoint below, reached from <b>Export</b> in the settings
 panel. It exists because the useful exports are the narrow ones, and typing a
 correct query string on a phone is miserable.</p>
+
+<figure><img src="docs/export.jpg" loading="lazy" alt="The export form. The URL it is building is shown as you change the filters, with a live count of how many messages match.">
+<figcaption>The export form. The URL it is building is shown as you change the filters, with a live count of how many messages match.</figcaption></figure>
 
 <ul>
   <li><b>Channels</b> are listed as they appear in the database, each with its
