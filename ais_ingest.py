@@ -735,6 +735,23 @@ class Tagger:
             hits = M.match_all(tr, ves)
             if not hits:
                 continue
+            # What this message was already tagged with, before the
+            # rewrite below. The watermark is held RESCAN_LAG_S back so
+            # a late transcript is not missed, which means every tagged
+            # message in the trailing five minutes is re-tagged on
+            # every pass -- sixty times, at TAG_EVERY. The writes are
+            # idempotent and cost nothing, but the log line was not:
+            # the same "vessel X on Ch14 -- 2.1 nm" appeared every five
+            # seconds for as long as the message stayed in the window,
+            # burying everything else in the journal and writing it all
+            # to the SD card. The DSC path below already guarded its
+            # log line this way; this one did not.
+            #
+            # (started_at, channel) is the leading edge of the primary
+            # key, so this is a seek, not a scan.
+            was = {(r[0], r[1]) for r in self.db.execute(
+                "SELECT mmsi, role FROM message_vessel"
+                " WHERE started_at=? AND channel=?", (started, chan))}
             self.db.execute("DELETE FROM message_vessel WHERE started_at=?"
                             " AND channel=?", (started, chan))
             for i, hit in enumerate(hits):
@@ -750,10 +767,14 @@ class Tagger:
                      d, b, hit["rule"], hit["pos_age_s"],
                      hit.get("sog"), iso()))
                 tagged += 1
-                log.info("vessel %s%s on %s%s", hit["name"],
-                         "" if not hit["role"] else " (%s)" % hit["role"],
-                         chan,
-                         "" if d is None else " -- %.1f nm, %03.0f deg" % (d, b))
+                # Only when this is news: a vessel newly attached to
+                # this transmission, or attached in a different role.
+                if (hit["mmsi"], hit["role"]) not in was:
+                    log.info("vessel %s%s on %s%s", hit["name"],
+                             "" if not hit["role"] else " (%s)" % hit["role"],
+                             chan,
+                             "" if d is None
+                             else " -- %.1f nm, %03.0f deg" % (d, b))
 
         by_mmsi = {str(v["mmsi"]): v for v in ves}
         for dsc_id, self_id, address in dsc:
