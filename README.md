@@ -741,6 +741,13 @@ position and your received traffic off the boat every time it runs.
 
 ![The traffic brief: a decision section first, then the traffic it came from](docs/ai_brief.jpg)
 
+[**An example brief**](docs/brief_example.html) is included with the
+documentation — a real one from a November morning, position rounded. It is
+worth a look before deciding whether this feature is for you: the decision
+section comes first, every claim links back to the transmission behind it, and
+traffic that was later cancelled is listed under *ignore* with the
+cancellation linked rather than quietly dropped.
+
 The brief opens with what the model thinks you should do about today — avoid,
 watch, ignore — and only then gives you the traffic behind it, so the part you
 act on is not buried under a table. Everything in the tables links back to a
@@ -832,11 +839,14 @@ the web interface joins the two worlds at read time — which is why the radio
 keeps working perfectly well with no AIS feed at all, and why the AIS picture
 survives a receiver restart.
 
-`docs.html` is the full operator and maintenance guide covering all of this in
-detail: the signal path, the two decoders, the hallucination filters, the
-quality score, the thermal governor, the CLI, routine administration, and
-troubleshooting. It is served at `/docs` by the web interface, and there is a
-link in the settings panel of every page.
+The documentation comes in two halves. `docs.html` is the user's manual
+— what the log shows you, the map, the AIS page, searching, exporting and the
+brief, with screenshots — served at `/docs` and linked from the settings panel
+of every page. `internals.html` is the technical manual, served at
+`/internals` and linked from the foot of the user's manual: the signal path,
+the two decoders, the hallucination filters, the quality score, the thermal
+governor, the AIS stores, the matcher, the CLI, routine administration and
+troubleshooting.
 
 ---
 
@@ -903,7 +913,9 @@ link in the settings panel of every page.
 | `dsc_decode.py` | Ch70 DSC decoding. Third-party, MIT — see `dsc_decode.LICENSE` |
 | `watchkeeper.example.toml` | A real configuration with the identifying values replaced. Copy to `watchkeeper.toml`, which is not tracked. |
 | `brief_prompt.txt` | The prompt the AI brief sends. Read at run time — edit it and the next brief uses it. |
-| `docs.html` | Operator and maintenance guide, served at `/docs` |
+| `docs.html` | The user's manual, served at `/docs` — what the log shows, the map, the AIS page, export and the brief |
+| `internals.html` | The technical manual, served at `/internals` — signal path, decoders, AIS, configuration |
+| `docs/` | The user manual's screenshots |
 | `nightly_recycle.py` | Optional: restarts the receiver when memory is high and the log is idle |
 | `test_dsp.py` | DSP test suite — run after any change to the signal path |
 | `systemd/` | Templated units for running at boot, including the optional AIS ingest |

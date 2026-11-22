@@ -12710,7 +12710,8 @@ class Handler(BaseHTTPRequestHandler):
     INTERNALS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "internals.html")
 
-    # The guide's screenshots. Served rather than inlined as data URIs:
+    # The guide's screenshots, and the saved example brief. Served rather
+    # than inlined as data URIs:
     # the images come to about 1.5 MB, and over a metered uplink a guide
     # that costs 2 MB to open is a guide nobody opens. As separate files
     # the browser fetches them lazily and caches them, and a deployment
@@ -12719,7 +12720,10 @@ class Handler(BaseHTTPRequestHandler):
     DOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "docs")
     DOC_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                       ".png": "image/png"}
+                       ".png": "image/png",
+                       # The saved example brief the guide links to. Our own
+                       # file, written by us, sitting beside the screenshots.
+                       ".html": "text/html; charset=utf-8"}
 
     def _serve_doc_image(self, name):
         """One file out of docs/, by name only.
