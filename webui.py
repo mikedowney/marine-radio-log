@@ -7955,7 +7955,14 @@ def map_payload(db_path, pre=None, since_t=None, since_h=None):
                 if v:
                     r["vs"] = v
 
+    # The pinned vessels, sent whole rather than per-row. There are a
+    # handful of them and the list changes a few times a month, so a
+    # delta that repeats it costs nothing and means a star toggled on
+    # the AIS page reaches the map on the next poll rather than on the
+    # next reload. favourite_mmsis() returns strings, which is what
+    # DATA.now is keyed on.
     out = {"own": {"lat": own["lat"], "lon": own["lon"]},
+           "favs": favourite_mmsis(db_path),
            "built": time.time(), "maxHours": MAP_MAX_HOURS,
            # Served from this process, so /audio/<id> resolves
            # against our own origin and needs no host baked in.
@@ -8074,6 +8081,17 @@ MAP_PAGE = r"""<!DOCTYPE html>
    box-shadow:none;filter:drop-shadow(0 1px 2px #000a)}
  .m.now.dir svg{width:100%;height:100%;display:block;overflow:visible}
  .m.now.dir.sel{width:31px;height:31px}
+ /* A favourite, in Vessels mode. A ring rather than a colour: the
+    arrow's colour is already her speed band, and red there means
+    "under a knot, do not trust the heading" -- recolouring a
+    favourite would overwrite a warning. Drawn on ::after so it works
+    for both shapes of mark, the arrow and the plain ring, and sits
+    under the pointer rather than catching it. */
+ .m.now.fav::after{content:'';position:absolute;left:50%;top:50%;
+   width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;
+   border:2px solid #7FD4E8;box-shadow:0 0 0 1px #0b141899,0 0 8px #7FD4E8;
+   pointer-events:none}
+ .m.now.fav.sel::after{width:44px;height:44px;margin:-22px 0 0 -22px}
  .fail{background:repeating-linear-gradient(45deg,#1a2a31 0 6px,
    #152228 6px 12px)}
  .m.me{width:17px;height:17px;background:#d9534f;border:2px solid #4a1210}
@@ -8581,6 +8599,11 @@ const visible = () => inWindow().filter(
 // targets against forty actually moving. Drawing all of them buries
 // the ones worth looking at under the marinas.
 const UNDER_WAY_KT = 0.5;
+// The pinned vessels, as a Set of mmsi strings. Rebuilt whenever a
+// payload carries the list, so starring a vessel on the AIS page shows
+// up here on the next poll rather than on the next reload.
+let favs = new Set(DATA.favs || []);
+const isFav = m => favs.has(String(m));
 
 /* Where the fleet was at the scrub point, or null for "now".
    DATA.now is a snapshot taken when the page was served; this replaces
@@ -8742,8 +8765,12 @@ function buildMarks() {
     const dir = cogOk(n.cog);
     const col = bandCol(band(n.sog));
     // In Vessels mode a mark is a way in: click it for her track.
+    // Only in Vessels mode: that is where the fleet is the subject and
+    // picking one out of it is the job. In Messages mode the only
+    // vessels drawn are already the ones you asked about.
     const el = add(n.lat, n.lon,
-        'now' + (dir ? ' dir' : '') + (vessel === m ? ' sel' : ''),
+        'now' + (dir ? ' dir' : '') + (vessel === m ? ' sel' : '')
+              + (mode === 'vessels' && isFav(m) ? ' fav' : ''),
         nowTip(m, n),
         mode === 'vessels' && vessel !== m
             ? () => pickVessel(m, true) : null);
@@ -8829,7 +8856,10 @@ function nowTip(mmsi, n) {
       + (nm < 10 ? nm.toFixed(1) : String(Math.round(nm))) + 'nm';
   }
   const age = ageOf(n.pos_at);
+  // Says what the ring means, so a marked vessel explains herself
+  // rather than leaving the operator to wonder what singled her out.
   return '<b>' + esc(n.name || mmsi) + '</b>'
+    + (isFav(mmsi) ? ' <span style="color:#7FD4E8">&#9733; favourite</span>' : '')
     + (line ? '<br><i>' + line + '</i>' : '')
     + (age ? '<br><i>age ' + esc(age) + '</i>' : '');
 }
@@ -10554,6 +10584,14 @@ function mergeDelta(d) {
     }
   }
 
+  if (d.favs) {
+    const next = new Set(d.favs);
+    // Only a repaint if the set actually changed, or every poll would
+    // report itself as a change and redraw the whole map for nothing.
+    if (next.size !== favs.size || [...next].some(m => !favs.has(m))) {
+      favs = next; touched = true;
+    }
+  }
   if (d.built) { DATA.built = d.built; }
   if (d.wm) { wmHave = d.wm; }
   return touched;

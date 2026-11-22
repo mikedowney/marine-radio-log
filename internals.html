@@ -2854,6 +2854,27 @@ click is the wrong surprise. The thirty-second poll is suspended while a box
 is open, or the redraw would take it and whatever is half-written in it.</p>
 
 <h3 id="mappage">Map view &mdash; /map</h3>
+
+<p>A favourite is ringed in Vessels mode. The ring is drawn on
+<code>::after</code>, which keeps it independent of the mark's own shape
+&mdash; a vessel reporting a course is an SVG arrow, one without is a plain
+circle, and both take the same halo. It is deliberately not a change to the
+arrow's colour: that colour is her speed band, and the red band carries a
+warning of its own (under a knot, the heading is as likely to be GPS noise
+as a heading), so recolouring a favourite would overwrite it.</p>
+
+<p>The pinned list travels whole in the payload as <code>favs</code>, in the
+deltas as well as the first load, so starring a vessel on the AIS page shows
+up on the map within a poll rather than at the next reload. It is a handful
+of MMSIs and changes a few times a month, so repeating it costs less than
+tracking what changed. The client compares the set before repainting;
+otherwise every poll would report itself as a change and redraw the map for
+nothing.</p>
+
+<p>Ringing does not make her visible. Vessels mode draws whoever is making
+way, plus whoever is selected, so a favourite at anchor is absent and the
+ring with her. That was a deliberate choice: the alternative is that the
+mode stops meaning "what is moving".</p>
 <p>Every tagged transmission in the window, drawn where the vessel was when
 she made it, with her recorded track underneath and the traffic around the
 selected one beside it. Built per request from <code>ais.db</code>,
