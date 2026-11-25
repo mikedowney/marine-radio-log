@@ -2875,6 +2875,14 @@ nothing.</p>
 way, plus whoever is selected, so a favourite at anchor is absent and the
 ring with her. That was a deliberate choice: the alternative is that the
 mode stops meaning "what is moving".</p>
+
+<p>The <a href="#allvessels">all-targets toggle</a> changes what is drawn but
+not that rule. A favourite lying at anchor is now drawn when the toggle is
+on, as a muted dot like any other &mdash; but without her ring. Until the
+toggle existed "only when making way" held by accident, because a stopped
+vessel was never drawn at all; it is now stated in the code, with a test
+on it, because the first version of the toggle quietly started ringing
+every pinned boat in the marina.</p>
 <p>Every tagged transmission in the window, drawn where the vessel was when
 she made it, with her recorded track underneath and the traffic around the
 selected one beside it. Built per request from <code>ais.db</code>,
@@ -2895,10 +2903,12 @@ leaves out the ones sitting still &mdash; a bay full of anchored vessels is
 noise on a chart whose point is movement. Click one and the view becomes
 hers: her track is fetched and drawn, and she is selected in the dropdown.
 Picking a vessel in the dropdown does the same thing from the other
-direction.</p>
+direction. The <a href="#allvessels">anchor button</a> lifts that filter when
+the anchorage <em>is</em> the question.</p>
 
 <p>The window is 1 or 6 hours, then every 12 hours out to 14 days &mdash; 30
-steps in all &mdash; and defaults to 24. The vessel
+steps in all &mdash; and defaults to 24, with
+<a href="#customrange">a custom range</a> at the foot of the list. The vessel
 dropdown is rebuilt from whatever was tagged inside the window, so it never
 offers a vessel with nothing to show. Everything after load is client side:
 changing either filter re-filters in place.</p>
@@ -2976,6 +2986,149 @@ same gesture. <strong>live</strong> returns it to the present.</p>
 with no zone marker, which JavaScript reads as local time &mdash; a silent
 eight-hour error that made every fix look like it happened this morning. The
 page appends the marker before parsing.</p>
+
+<h4 id="customrange">A custom range, and the two ends of the window</h4>
+
+<p>Every other entry in the window dropdown is &ldquo;the last N
+hours&rdquo;, which meant <code>DATA.built</code> was doing two jobs at
+once: the right-hand end of the timeline, and the meaning of <em>now</em>.
+A custom range moves that end into the past, so the two had to be told
+apart. <code>winLo()</code> and <code>winHi()</code> are the ends of what
+is being <em>shown</em>; <code>DATA.built</code> went back to meaning only
+the moment the page was built.</p>
+
+<p>That distinction is the whole change. Eight call sites read
+<code>DATA.built</code> as the right edge &mdash; the cutoff for marks, the
+timeline&rsquo;s own span, the handle position, playback&rsquo;s stop
+condition &mdash; and each now reads <code>winHi()</code>. Two consequences
+were not obvious until the edge moved:</p>
+
+<ul>
+  <li><code>inWindow()</code> had only ever had a lower bound, because the
+      upper one was always &ldquo;now&rdquo; and there was nothing above it.
+      A range has traffic on both sides of it, so it is bounded at both
+      ends now.</li>
+  <li><code>/api/track</code> only understands &ldquo;hours back from
+      now&rdquo;. A range is asked for enough hours to reach its start and
+      the answer is then clipped to the range, or the track would be drawn
+      running off past the right-hand end of the timeline. The clip is
+      applied after the fetch, so the cache key had to become the range
+      rather than the hour count.</li>
+</ul>
+
+<p>The picker is bounded by what the page actually holds: the payload is cut
+at <code>MAP_MAX_HOURS</code>, so a range older than that would draw nothing
+and a picker that accepted it would be lying about what is available. A
+backwards range, a sub-minute one, or anything past either end is refused
+with a reason rather than clamped to something that was not asked for.</p>
+
+<p>The side log follows a custom range, which is a departure: a relative
+window does not filter it, because the panel is a reading view and scrolling
+back past the window has always been allowed. A range is a deliberate
+&ldquo;show me this afternoon&rdquo;, and leaving the newest traffic in the
+panel put Sunday&rsquo;s messages beside Tuesday&rsquo;s map and labelled
+them live. Polling also stops while a range is up, for the same reason.</p>
+
+<h4 id="synctime">Sync Time</h4>
+
+<p>The list follows the slider; this is the same link the other way. It moves
+the clock to the moment a transmission was keyed, so the fleet redraws where
+it was while those words were going out.</p>
+
+<p>It exists because the slider cannot do it by hand. The handle has a
+thousand steps across the whole window: 86 seconds per step at 24 hours and
+twenty minutes per step at a fortnight, so the exact moment of a given
+message is usually not reachable by dragging. <code>scrubTo()</code> sets
+<code>scrubT</code> from the message&rsquo;s own timestamp and is exact;
+<code>tl.value</code> is only the handle catching up, and is rounded.</p>
+
+<p>One button rather than one per row, because the panel is narrow and a
+mark on every line was clutter. That leaves the question of which message it
+means, so the button answers it twice over: the timestamp in the label is the
+one it will use, and that row carries <code>.tgt</code> &mdash; a purple wash
+and edge, the only purple on the page, matching the button. The pair has to
+read as one feature rather than as two unrelated marks. The panel&rsquo;s
+contents are replaced from six different places, so rather than a call at
+each the bar watches the element &mdash; a seventh added later cannot leave
+it pointing at a message that is no longer on screen.</p>
+
+<p><code>.tgt</code> is a different question from <code>.at</code>, which
+marks where the clock <em>is</em>: this marks where it would <em>go</em>. An
+earlier version put the emphasis on <code>.at</code> instead, which drew
+attention to the row already landed on &mdash; useful to nobody, since the
+panel scrolls that row to the middle anyway. Both classes can hold on one
+row, and do for a moment after a jump, because centring the row makes it the
+target again; the purple is declared second so it takes the edge.</p>
+
+<p>The side log is not filtered by the window, so a row can sit left of the
+slider&rsquo;s own left edge, and often does. The window is widened to reach
+it rather than the clock being clamped to the edge, which would put it on a
+different moment than the one asked for and say nothing about having done
+so. Under a custom range the reaching end is stretched instead, since the
+range was set deliberately.</p>
+
+<p>Desktop only. On a phone the log is 40% of a short screen &mdash; three or
+four rows &mdash; so &ldquo;the message in the middle of the list&rdquo; is
+barely a choice, and the bar would spend one of the few rows there are.</p>
+
+<h4 id="allvessels">Every target, and the resting snapshot</h4>
+
+<p>Vessels mode draws what is making way. The anchor button lifts that, which
+on this water means roughly twelve hundred targets against forty under way.
+Measured at 1200 marks: <code>buildMarks()</code> 18&nbsp;ms, a full
+<code>render()</code> 15&nbsp;ms, <code>placeMarks()</code> under a
+millisecond a frame. Affordable, and the reason there is no viewport culling
+&mdash; the cost is in <em>building</em> the marks, not in placing the
+visible ones, so culling would attack the cheap half and pay for it with a
+rebuild on every pan.</p>
+
+<p>The real problem at that count is reading the chart, not drawing it.
+Resting targets are small muted dots rather than hollow rings, and carry no
+direction arrow: below half a knot a reported course is as likely to be GPS
+noise as a heading, and a thousand noise arrows point everywhere and mean
+nothing. The selected vessel keeps her full mark whatever her speed. The
+muted style comes from the stylesheet rather than the inline band colour,
+which would otherwise win and put a thousand speed-coloured dots back on
+the chart.</p>
+
+<p>It is off on every load, which is the one map preference that is
+deliberately not remembered. It is the heavy view, and opening on a thousand
+dots because of something done yesterday is not what the page should do.</p>
+
+<p><strong>Live is free; a replay is not.</strong> Live, the page already
+holds every target in <code>DATA.now</code>, so the toggle is a filter and
+costs nothing. Scrubbed, the fleet comes from <code>/api/fleet_at</code>,
+which filtered by speed on the server and capped at 400 vessels. Both had to
+give, and the shape of the answer was the interesting part:</p>
+
+<ul>
+  <li>Movers are answered <em>per frame</em>, because that is what a replay
+      is. A few KB whatever the window.</li>
+  <li>Vessels at rest are the opposite case. They are fetched once, as a
+      snapshot, for the visible window and the parked moment &mdash; and
+      then left alone. Playback never re-fetches them: the anchorage stands
+      still underneath the traffic, which is both cheap and true, since
+      none of them are going anywhere.</li>
+</ul>
+
+<p>Hence <code>want=moving|rest|all</code> and an optional <code>bbox</code>
+on the endpoint. Measured against a synthetic anchorage of 1160 resting
+targets: the unbounded answer is 123&nbsp;KB, a 1&nbsp;km box 17.9&nbsp;KB,
+a tight one 0.7&nbsp;KB. The bbox is applied after interpolation rather than
+in the SQL, so a vessel whose two fixes straddle the edge of the box is
+still placed from both of them rather than snapping to the one inside it.
+An unrecognised <code>want</code> falls back to the movers, so an old page
+against a new server keeps getting what it always got.</p>
+
+<p>The snapshot reloads itself while the clock is parked and the view or the
+moment moves beyond it; never while the film runs. The box is padded 15%, so
+small pans do not re-fetch &mdash; a detail that did nothing at first,
+because <code>viewBBox(0)</code> was written as <code>pad || 0.15</code> and
+zero is falsy, so the staleness check compared a padded box against a padded
+box and the smallest nudge re-fetched the whole anchorage.</p>
+
+<p>Desktop only, like Sync Time: on a phone this would put a thousand dots
+on a map the size of a postcard.</p>
 
 <h4>The context panel</h4>
 <p>Choosing a vessel, from the dropdown or by clicking her, selects her

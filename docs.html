@@ -406,7 +406,8 @@ panel.</p>
       around it.</li>
   <li><b>Vessels</b> &mdash; everything currently moving, as an arrow pointing
       the way she is heading, coloured by speed. This is what opens by
-      default.</li>
+      default. Everything <em>not</em> moving can be brought in as well;
+      see <a href="#allv">showing everything</a> below.</li>
 </ul>
 
 <p>Click a vessel to draw her track. The colours along it are her speed, and a
@@ -414,7 +415,9 @@ dashed section is a gap in reception rather than a leg she actually sailed
 &mdash; the receiver simply did not hear her for a while.</p>
 
 <p>The <b>Window</b> dropdown in the bar chooses how far back the map
-looks.</p>
+looks &mdash; an hour, six hours, then half-day steps out to a fortnight,
+which is as far back as the map holds. The last entry in the list sets
+<a href="#range">a range of your own</a> instead.</p>
 
 <p>No control on the map moves the map. The window, the vessel dropdown,
 the Messages and Vessels buttons, the backdrop &mdash; all of them change
@@ -430,16 +433,65 @@ comes from an outside service, so it is the one part of the map that needs
 connectivity; the satellite imagery and everything drawn on top keep
 working.</p>
 
+<h3 id="allv">Showing everything, not just what is moving</h3>
+
+<p>Vessels mode draws what is under way, which on a busy day is a few dozen
+boats out of the twelve hundred or so the receiver can hear. The rest are
+alongside, on moorings or at anchor, and on a chart whose point is movement
+they are noise.</p>
+
+<p>The <b>&#9875;</b> button under the zoom controls brings them in anyway,
+for when the anchorage is the thing you are looking at. They are drawn as
+small grey dots rather than arrows: below half a knot a reported course is
+as likely to be GPS noise as a heading, and a thousand arrows pointing a
+thousand ways is worse than none. A vessel you have selected keeps her full
+mark whatever her speed, so you are never hunting for her among them.</p>
+
+<p>It starts off every time the page loads. That is deliberate &mdash; it is
+the heavy view, worth asking for rather than arriving in. A favourite still
+only gets her ring while she is making way, so turning this on does not
+light up every pinned boat in the marina.</p>
+
+<p>It is a desktop control. On a phone the map is too small for it to be
+anything but a mess.</p>
+
 <h3>Going back in time</h3>
 
-<p>The slider along the bottom scrubs the last 24 hours. Drag it and the whole
-fleet moves to where it was at that moment. The <b>&#9654;</b> button plays it
-forward at sixty times real speed, so an hour of traffic takes a minute.
-<b>live</b> brings you back to now.</p>
+<p>The slider along the bottom scrubs the window &mdash; the last 24 hours
+unless you have set it to something else. Drag it and the whole fleet moves
+to where it was at that moment. The <b>&#9654;</b> button plays it forward at
+sixty times real speed, so an hour of traffic takes a minute. <b>live</b>
+brings you back to now.</p>
 
 <p>This is the quickest way to answer <em>what was going on when she said
 that</em> &mdash; scrub to the time of a message and look at what was around
-her.</p>
+her. <a href="#sync">Sync Time</a> does that step for you.</p>
+
+<p>The anchored vessels work here too, with one difference. Park the slider
+somewhere and press <b>&#9875;</b>, and it loads whatever was lying still in
+the part of the water you are looking at, at that moment. Press play and
+that set stays put while the traffic moves over it &mdash; which is both
+quicker and truer, since none of them were going anywhere. Pause and it
+loads again for wherever you have ended up. While the replay is actually
+running the button is greyed out, because that is when it is holding still
+on purpose.</p>
+
+<h3 id="range">A range of your own</h3>
+
+<p>Every entry in the <b>Window</b> dropdown is &ldquo;the last so-many
+hours&rdquo;, counted back from now. The last one, <b>Custom range&hellip;</b>,
+is not: it opens a small panel where you set a start and an end, and the map
+shows exactly that stretch.</p>
+
+<p>The timeline changes with it. The slider now runs from your start to your
+end rather than from some hours ago to now, so dragging it covers the period
+you chose and nothing outside it, and the replay stops at the end of your
+range instead of running on to the present. The log beside the map narrows
+to the same stretch, so what you are reading is what was said during it.</p>
+
+<p>You can pick anywhere in the last fortnight, which is as far back as the
+map holds; ask for more and it tells you rather than quietly showing you
+something else. <b>live</b> leaves the range and brings you back to now.</p>
 
 <h3>Measuring a distance</h3>
 
@@ -473,6 +525,29 @@ the panel on that exchange; <b>live</b> releases it and the traffic resumes.</p>
 
 <p>While the replay is running the panel follows the clock instead, showing
 what was being said at the moment you are watching.</p>
+
+<h3 id="sync">Jumping the clock to a message</h3>
+
+<p>Under the dropdown is <b>Sync Time</b>. It moves the timeline to the moment
+a transmission was keyed, so you can see where every vessel actually was while
+those words were going out.</p>
+
+<p>It names the message it will jump to &mdash; whichever one is in the middle
+of the list &mdash; and re-aims as you scroll, so there is never a question
+about which one you are about to land on. That message is marked in the list
+as well, in the same purple as the button, so the pair reads as one thing:
+the button says a time, and the purple row is the message at it.</p>
+
+<p>It exists because the slider cannot do this by hand. The handle has a
+thousand steps across the whole window, which is about a minute and a half per
+step at 24 hours and twenty minutes per step at a fortnight, so the exact
+moment of a given message is usually not reachable by dragging at all. If the
+message is older than the window, the window widens to reach it rather than
+putting the clock somewhere near it and saying nothing.</p>
+
+<p>It is a desktop control: on a phone the log is three or four rows of a
+short screen, and &ldquo;the message in the middle&rdquo; is barely a
+choice.</p>
 
 <!-- ========================================================= -->
 <h2 id="ais">5. Vessels around you</h2>

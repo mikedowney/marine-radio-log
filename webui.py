@@ -8092,6 +8092,17 @@ MAP_PAGE = r"""<!DOCTYPE html>
    border:2px solid #7FD4E8;box-shadow:0 0 0 1px #0b141899,0 0 8px #7FD4E8;
    pointer-events:none}
  .m.now.fav.sel::after{width:44px;height:44px;margin:-22px 0 0 -22px}
+ /* Drawn only by the "all targets" toggle: everything alongside, at
+    anchor or drifting. A small muted dot rather than the hollow ring,
+    because there are around twelve hundred of these against forty
+    under way and at ring size they bury the traffic that is actually
+    moving. No arrow either -- under half a knot a reported course is
+    as likely to be GPS noise as a heading, and twelve hundred noise
+    arrows point everywhere and mean nothing. Under everything else in
+    the stack: these are background, not subject. */
+ .m.now.still{width:7px;height:7px;border:2px solid #4a6470;
+   background:#16262e;box-shadow:none;z-index:0}
+ .m.now.still:hover{border-color:#8FA6AE;background:#24404c}
  .fail{background:repeating-linear-gradient(45deg,#1a2a31 0 6px,
    #152228 6px 12px)}
  .m.me{width:17px;height:17px;background:#d9534f;border:2px solid #4a1210}
@@ -8104,6 +8115,12 @@ MAP_PAGE = r"""<!DOCTYPE html>
  #ctl button{display:block;width:32px;height:32px;margin-bottom:4px;
    font-size:17px;background:#102029dd;color:#D7E3E8;cursor:pointer;
    border:1px solid #22424f;border-radius:6px}
+ #ctl button.on{background:#1b3f4edd;border-color:#7FD4E8;color:#7FD4E8}
+ /* The historical fleet is answered by the server, which sends
+    vessels under way only, so this toggle has nothing to act on
+    while the clock is scrubbed. Dimmed rather than removed: it is
+    still showing you its state, and "live" brings it back. */
+ #ctl button.dim{opacity:.4}
  #att{position:absolute;left:10px;bottom:46px;z-index:30;font-size:11px;
    color:#6E868F;background:#0B1418cc;padding:3px 7px;border-radius:4px}
  /* The scrubber. A strip rather than a floating control: it spans the
@@ -8182,6 +8199,48 @@ MAP_PAGE = r"""<!DOCTYPE html>
     row. */
  .e .ch{color:#6E868F;font-size:10.5px}
  #logsub{padding:0 14px 8px;color:#8FA6AE;font-size:12px}
+ /* The sync button. Full width because this panel is reached from a
+    phone as often as a desk, and a thumb wants a bar rather than a
+    word. Hidden outright when the list has no rows to point at. */
+ #syncbar{display:none;padding:0 14px 8px}
+ #syncbar.on{display:block}
+ /* Purple rather than the page's cyan, matching the row it is aimed
+    at. The link between the two is the whole point: the button names a
+    moment, and that row is the moment it names. */
+ #synct{width:100%;cursor:pointer;background:#1c1733;color:#C9A6F2;
+   border:1px solid #514279;border-radius:4px;padding:6px 8px;
+   font:inherit;font-size:11.5px;letter-spacing:.03em;
+   font-variant-numeric:tabular-nums}
+ #synct:hover{background:#2a2250;border-color:#C9A6F2}
+ #synct:active{background:#352a63}
+ /* The custom-range dialog. Fixed rather than inside #map, because
+    the map clips its own overlays and this has to sit over the
+    whole page including the log. */
+ #rangewrap{position:fixed;inset:0;background:#040b0ecc;z-index:60;
+   display:flex;align-items:center;justify-content:center}
+ #rangewrap[hidden]{display:none}
+ #rangebox{background:#102029;border:1px solid #2c5562;border-radius:6px;
+   padding:16px 18px;width:min(92vw,340px);box-shadow:0 8px 30px #000a}
+ #rangebox h3{margin:0 0 12px;font-size:12px;letter-spacing:.09em;
+   text-transform:uppercase;color:#7FD4E8}
+ #rangebox label{display:block;font-size:11.5px;color:#8FA6AE;margin:0 0 10px}
+ #rangebox input{display:block;width:100%;margin-top:4px;background:#0b1418;
+   color:#D7E3E8;border:1px solid #2c5562;border-radius:4px;padding:7px 8px;
+   font:inherit;font-size:12.5px;font-variant-numeric:tabular-nums}
+ #rangenote{font-size:11px;color:#6E868F;min-height:28px;margin-bottom:8px}
+ #rangenote.bad{color:#FF9A33}
+ #rangebtns{display:flex;gap:8px;justify-content:flex-end}
+ #rangebtns button{cursor:pointer;background:#12242c;color:#7FD4E8;
+   border:1px solid #2c5562;border-radius:4px;padding:7px 14px;font:inherit;
+   font-size:12px}
+ #rangebtns button:hover{background:#1b3f4e;border-color:#7FD4E8}
+ /* Qualified by the container: a bare #rok is (1,0,0) and loses to
+    the #rangebtns button rule above it, which is (1,0,1) -- so the
+    primary button rendered as an outline like Cancel. */
+ #rangebtns #rok{color:#0b1418;background:#7FD4E8;border-color:#7FD4E8;
+   font-weight:600}
+ #rangebtns #rok:hover{background:#9ee0f0;color:#0b1418;
+   border-color:#9ee0f0}
  #logbody{flex:1;overflow:auto;padding:0 0 14px}
  .e{padding:7px 14px;border-left:3px solid transparent}
  .e+.e{border-top:1px solid #16303c}
@@ -8201,6 +8260,27 @@ MAP_PAGE = r"""<!DOCTYPE html>
  /* Where the slider is sitting. Deliberately unlike .hit, which marks
     the message the map was asked about. */
  .e.at{box-shadow:inset 3px 0 0 #7FD4E8}
+ /* The message Sync Time will jump to: the one in the middle of the
+    list, which re-aims as the list is scrolled.
+
+    This is a different question from .at above. .at is where the clock
+    IS; this is where it would GO, and it is the one worth being able
+    to find at a glance, because you are choosing it. An earlier
+    version put this wash on .at instead, which marked the row you had
+    already landed on -- useful to nobody, since the panel scrolls it
+    to the middle anyway.
+
+    Purple, and the only purple on the page, because the button that
+    acts on it is purple too: the two have to read as one feature
+    rather than as two unrelated marks. Both classes can be true of one
+    row; the purple comes second so it takes the edge, the thing you
+    are about to do mattering more than the thing already done.
+    Excluded on .hit so a row the map was opened for keeps its
+    orange. */
+ .e.tgt{box-shadow:inset 4px 0 0 #C9A6F2}
+ .e.tgt:not(.hit){background:linear-gradient(90deg,
+   #3b2f5e 0%, #241d3a 48%, #102029 100%)}
+ .e.tgt:not(.hit) .h{color:#D8C2F8}
  /* A tagged line says so wherever it is in the context. Only the one
     the map was opened for is also highlighted -- being tagged and
     being the subject are different things. */
@@ -8242,6 +8322,24 @@ MAP_PAGE = r"""<!DOCTYPE html>
    #map{flex:1 1 auto;min-height:0}
    #log{width:auto;flex:0 0 40%;min-height:0;
         border-left:0;border-top:1px solid #22424f}
+
+   /* Sync Time is a desktop control. On a phone the log is 40% of a
+      short screen -- three or four rows -- so "the message in the
+      middle of the list" is barely a choice, and the bar would spend
+      a row of the few there are. The timeline still scrubs here and
+      the scrub row is still marked; only the jump button is gone.
+      Hidden rather than removed, so rotating a tablet back to a wide
+      layout brings it straight back. */
+   #syncbar,#syncbar.on{display:none}
+
+   /* The all-targets toggle is a desktop control too. It is for
+      leaning into a crowded anchorage on a big screen; on a phone it
+      would put twelve hundred dots on a map the size of a postcard. */
+   /* Qualified by the container, like the Apply button further up:
+      a bare #allv is (1,0,0) and loses to the #ctl button rule, which
+      is (1,0,1), so it stayed visible on a phone. A media query does
+      not change specificity. */
+   #ctl #allv{display:none}
 
    /* The vessel dropdown ran 68px off the side of a 390px screen and
       the toggles were squeezed to "Vess" and "Satel". */
@@ -8357,7 +8455,8 @@ MAP_PAGE = r"""<!DOCTYPE html>
    <button id="tnow" title="back to live">live</button>
   </div>
   <div id="ctl"><button id="zin">+</button><button id="zout">&minus;</button>
-   <button id="zall" title="fit">&#9635;</button></div>
+   <button id="zall" title="fit">&#9635;</button>
+   <button id="allv" aria-pressed="false" title="show every AIS target, including those at anchor or alongside (live view only)">&#9875;</button></div>
   <div id="att"></div>
   <div id="legend"></div>
  </div>
@@ -8365,11 +8464,22 @@ MAP_PAGE = r"""<!DOCTYPE html>
  <div id="log"><h2><span>Message Context</span>
   <select id="ctxch" aria-label="which messages to show"></select></h2>
   <div id="logsub">click a message on the map</div>
+  <div id="syncbar"><button id="synct" type="button"></button></div>
   <div id="logbody"><div id="empty">Tagged transmissions appear as
    orange dots. Click one to see what was said around it on the same
    channel &mdash; vessels rarely repeat their name, so the rest of the
    exchange is usually untagged. A context line marked &#9654; still has
    its recording; click it to hear it.</div></div>
+ </div>
+</div>
+<div id="rangewrap" hidden>
+ <div id="rangebox" role="dialog" aria-modal="true" aria-label="Custom range">
+  <h3>Custom range</h3>
+  <label>From <input type="datetime-local" id="rfrom" step="1"></label>
+  <label>To <input type="datetime-local" id="rto" step="1"></label>
+  <div id="rangenote"></div>
+  <div id="rangebtns"><button id="rcancel" type="button">Cancel</button>
+   <button id="rok" type="button">Apply</button></div>
  </div>
 </div>
 <script>
@@ -8396,6 +8506,68 @@ function winLabel(h) {
 // link from the log sets a vessel in preselect(), so its dot renders
 // in this mode too and those URLs are unaffected.
 let winH = 24, vessel = null, mode = 'vessels', sel = null;
+
+/* The window was always "the last N hours", so DATA.built served as
+   two different things at once: the right-hand end of the timeline,
+   and the meaning of "now". A custom range moves that end into the
+   past, so the two have to be told apart. winLo()/winHi() are the
+   ends of what is being SHOWN; DATA.built stays what it always was,
+   the moment the page was built. Everything that read DATA.built as
+   the right edge now reads winHi().
+
+   null is the ordinary relative window, and is the normal state. */
+let winCustom = null;
+/* Whether every AIS target is drawn, or only those actually making
+   way. Off is the default and the normal view: there are roughly
+   twelve hundred targets out there against forty under way, and the
+   other eleven hundred and sixty are alongside, on moorings or at
+   anchor. Turned on deliberately, to lean into a crowded anchorage.
+   Read back from prefs during setup, not here -- prefs is parsed much
+   further down the file than this. */
+let showAll = false;
+/* Not remembered. Every other map preference is -- the folded bar,
+   the split -- but this one starts off on every load by design. It
+   is the heavy view: a crowded anchorage, asked for deliberately
+   when you want it. Coming back to a thousand dots because of
+   something you did yesterday is not what the page should open on. */
+const winLo = () => winCustom ? winCustom.lo : DATA.built - winH * 3600;
+const winHi = () => winCustom ? winCustom.hi : DATA.built;
+// How far back the page actually holds anything: the server cuts the
+// payload at maxHours, so a range older than this would be empty and
+// would say so only by drawing nothing.
+const winFloor = () => DATA.built - (DATA.maxHours || 336) * 3600;
+const winText = () => winCustom
+  ? stamp(winCustom.lo) + ' \u2192 ' + stamp(winCustom.hi)
+  : winH + 'h';
+/* The same thing for the two places with no room for it: the folded
+   bar on a phone, and the dropdown itself. Seconds go, and so does
+   the second date when both ends fall on one day -- which is the
+   common case, since a range is usually an afternoon. The full form
+   above is kept for the dialog, where precision is the point. */
+const winTextShort = () => {
+  if (!winCustom) { return winH + 'h'; }
+  const hm = ts => new Date(ts * 1000).toLocaleTimeString([],
+    {hour: '2-digit', minute: '2-digit', hour12: false});
+  const dy = ts => new Date(ts * 1000).toLocaleDateString([],
+    {month: 'short', day: 'numeric'});
+  const a = new Date(winCustom.lo * 1000), b = new Date(winCustom.hi * 1000);
+  return a.toDateString() === b.toDateString()
+    ? dy(winCustom.lo) + ', ' + hm(winCustom.lo) + '\u2013' + hm(winCustom.hi)
+    : dy(winCustom.lo) + ' ' + hm(winCustom.lo)
+      + ' \u2192 ' + dy(winCustom.hi) + ' ' + hm(winCustom.hi);
+};
+// Identifies the window a track was fetched for, so a custom range
+// refetches rather than reusing one cut for a different span.
+const winKey = () => winCustom
+  ? 'c' + Math.round(winCustom.lo) + '-' + Math.round(winCustom.hi)
+  : 'h' + winH;
+// /api/track counts hours back from the SERVER's now, so a custom
+// range has to ask for enough to reach its start and then clip. The
+// spare hour covers however long the page has been open.
+const trackHours = () => winCustom
+  ? Math.max(1, Math.min(DATA.maxHours || 336,
+      Math.ceil((DATA.built - winCustom.lo) / 3600) + 1))
+  : winH;
 
 /* ---- projection and tiles: world pixels, standard slippy maths ---- */
 const TS = 256, MINZ = 8, MAXZ = 17, SHIFT = 20037508.342789244;
@@ -8586,8 +8758,12 @@ const utcStamp = s => {
   return isNaN(d.getTime()) ? s : stamp(d.getTime() / 1000);
 };
 
-const cutoff = () => DATA.built - winH * 3600;
-const inWindow = () => DATA.tags.filter(t => t.ts >= cutoff());
+const cutoff = () => winLo();
+// Bounded above as well now. With a relative window the top was
+// always "now" and there was nothing past it; a custom range has
+// traffic on both sides of it.
+const inWindow = () => DATA.tags.filter(
+  t => t.ts >= winLo() && t.ts <= winHi());
 const visible = () => inWindow().filter(
   t => vessel === null || t.mmsi === vessel);
 
@@ -8613,11 +8789,103 @@ const isFav = m => favs.has(String(m));
    browser was measured at 890 KB for a day, and the window reaches a
    fortnight. */
 let fleetAt = null;
+
+/* ---- the resting fleet, as a snapshot --------------------------------
+   Movers are answered for every frame of a replay, because that is
+   what a replay is. Vessels at rest are the opposite case: there are
+   around twelve hundred of them against forty under way, they are by
+   definition not going anywhere, and re-fetching them sixty times a
+   run would cost 130 KB a frame to redraw the same anchorage.
+
+   So they are fetched separately, once, for the view on screen and
+   the moment on the clock -- and then left alone. While the clock is
+   parked the snapshot reloads itself if the view or the moment moves
+   far enough to make it wrong. While the film is running it is never
+   reloaded: the anchorage stands still underneath the traffic, which
+   is both cheap and true.
+
+   Live is a different matter again: there the page already holds
+   every target in DATA.now, so the toggle is a free filter and none
+   of this is used. */
+let stillAt = null;       // {mmsi: vessel} for the resting fleet
+let stillMeta = null;     // {t, bbox} the snapshot was taken for
+let stillReq = 0;
+let stillTimer = null;
+
+/* The viewport in degrees, padded a little so a small pan does not
+   immediately strand the edges of what was fetched. */
+function viewBBox(pad) {
+  const v = viewport();
+  // Explicitly against undefined, not `pad || 0.15`: the one caller
+  // that matters passes 0, and zero is falsy, so the default came
+  // back and the staleness check compared a padded box against a
+  // padded box. The padding then bought nothing and the smallest pan
+  // re-fetched the anchorage.
+  const m = (pad === undefined ? 0.15 : pad);
+  const dx = v.w * m, dy = v.h * m;
+  const a = unproject(v.left - dx, v.top - dy, z);
+  const b = unproject(v.left + v.w + dx, v.top + v.h + dy, z);
+  return [Math.min(a.lat, b.lat), Math.min(a.lon, b.lon),
+          Math.max(a.lat, b.lat), Math.max(a.lon, b.lon)];
+}
+
+/* Whether the snapshot still answers for what is on screen. Stale if
+   there is none, if the clock has moved further than the window the
+   server interpolates over, or if the view has left the box that was
+   asked for. */
+function stillStale() {
+  if (!stillMeta) { return true; }
+  if (scrubT == null) { return true; }
+  if (Math.abs(scrubT - stillMeta.t) > 900) { return true; }
+  const b = viewBBox(0), o = stillMeta.bbox;
+  return b[0] < o[0] || b[1] < o[1] || b[2] > o[2] || b[3] > o[3];
+}
+
+function loadStills() {
+  if (!DATA.home) { return; }          // standalone: no server to ask
+  const seq = ++stillReq;
+  const when = scrubT, box = viewBBox();
+  fetch('/api/fleet_at?want=rest&t=' + encodeURIComponent(Math.round(when))
+        + '&bbox=' + box.map(n => n.toFixed(5)).join(','))
+    .then(r => r.json())
+    .then(d => {
+      if (seq !== stillReq) { return; }       // a later view won
+      // Record the attempt either way. maybeStills() is driven from
+      // render(), so a snapshot that stayed null would read as stale
+      // on the very next frame and ask again, four or five times a
+      // second, for as long as the failure lasted.
+      stillMeta = {t: when, bbox: box, n: 0, ok: false};
+      if (!d || !d.ok) { return; }
+      const map = {};
+      (d.vessels || []).forEach(v => { map[v.mmsi] = v; });
+      stillAt = map;
+      stillMeta = {t: when, bbox: box, n: d.vessels ? d.vessels.length : 0,
+                   truncated: !!d.truncated, ok: true};
+      buildMarks(); render();
+    })
+    .catch(() => { stillMeta = {t: when, bbox: box, n: 0, ok: false}; });
+}
+
+/* Asked from the places the view or the clock can change. Debounced,
+   because a drag fires render() every frame and each of those would
+   otherwise be a request. Never while the film is running: that is
+   the whole point of the snapshot. */
+function maybeStills() {
+  if (!showAll || tlPlaying || scrubT == null) { return; }
+  if (!stillStale()) { return; }
+  clearTimeout(stillTimer);
+  stillTimer = setTimeout(loadStills, 200);
+}
 let fleetReq = 0;
 
 // The position record for a vessel: the scrubbed one when scrubbing,
 // otherwise the live snapshot.
-function nowOf(m) { return (fleetAt || DATA.now)[m]; }
+function nowOf(m) {
+  // Scrubbed, a vessel is either in the frame's own answer or in the
+  // resting snapshot taken alongside it. Live, DATA.now has everyone.
+  if (fleetAt) { return fleetAt[m] || (stillAt ? stillAt[m] : undefined); }
+  return DATA.now[m];
+}
 
 function currentShown() {
   const s = new Set();
@@ -8627,6 +8895,10 @@ function currentShown() {
     // reporting at the time, and drawing her at today's position
     // would be a lie about the past.
     const s2 = new Set(Object.keys(fleetAt));
+    // Plus whatever was at rest when the snapshot was taken. Held
+    // separately so a replay can run the movers over a still
+    // anchorage without re-fetching it each frame.
+    if (stillAt) { Object.keys(stillAt).forEach(m => s2.add(m)); }
     if (vessel !== null && fleetAt[vessel]) { s2.add(vessel); }
     // The selected vessel is already being drawn by the scrub layer,
     // from her own track rather than from the fleet answer: finer
@@ -8646,7 +8918,7 @@ function currentShown() {
     // since left and so have no current position at all. That is why
     // this mode was blank.
     Object.keys(DATA.now).forEach(m => {
-      if ((DATA.now[m].sog || 0) > UNDER_WAY_KT) { s.add(m); }
+      if (showAll || (DATA.now[m].sog || 0) > UNDER_WAY_KT) { s.add(m); }
     });
     // And whoever is selected, moving or not: having clicked her, she
     // should not vanish when she slows to pick up a pilot.
@@ -8762,23 +9034,37 @@ function buildMarks() {
     // Under a knot that course is as likely to be GPS noise as a
     // heading -- the band colour is the warning, since under 1 kt is
     // red and a red arrow is one not to trust the direction of.
-    const dir = cogOk(n.cog);
+    // Shown only because the toggle is on: stopped, and not the
+    // vessel in hand. She keeps the full ring whatever her speed --
+    // having clicked her you should not have to hunt for a 7px dot.
+    const still = showAll && vessel !== m
+                  && (n.sog || 0) <= UNDER_WAY_KT;
+    const dir = !still && cogOk(n.cog);
     const col = bandCol(band(n.sog));
     // In Vessels mode a mark is a way in: click it for her track.
     // Only in Vessels mode: that is where the fleet is the subject and
     // picking one out of it is the job. In Messages mode the only
     // vessels drawn are already the ones you asked about.
     const el = add(n.lat, n.lon,
-        'now' + (dir ? ' dir' : '') + (vessel === m ? ' sel' : '')
-              + (mode === 'vessels' && isFav(m) ? ' fav' : ''),
+        'now' + (dir ? ' dir' : '') + (still ? ' still' : '')
+              + (vessel === m ? ' sel' : '')
+              // Favourites ring only when making way, which is what
+              // was asked for. Until now that held by accident, since
+              // a stopped vessel was never drawn at all; with the
+              // toggle on it has to be said.
+              + (mode === 'vessels' && isFav(m) && !still ? ' fav' : ''),
         nowTip(m, n),
         mode === 'vessels' && vessel !== m
             ? () => pickVessel(m, true) : null);
     if (dir) { el.appendChild(dirArrow(n.cog, col)); }
-    else { el.style.borderColor = col; }
+    // A still dot takes its colour from the stylesheet. Setting the
+    // band colour inline here would beat the muted rule and put a
+    // thousand speed-coloured dots back on the chart.
+    else if (!still) { el.style.borderColor = col; }
   });
   add(DATA.own.lat, DATA.own.lon, 'me',
       '<b>' + STATION + '</b><br><i>our position now</i>');
+  allBtnState();
 }
 function tagTip(t) {
   return '<b>' + esc(t.name) + '</b> &middot; ' + esc(t.ch)
@@ -8863,6 +9149,21 @@ function nowTip(mmsi, n) {
     + (line ? '<br><i>' + line + '</i>' : '')
     + (age ? '<br><i>age ' + esc(age) + '</i>' : '');
 }
+/* The toggle is dimmed while the film runs, because the resting
+   anchorage is deliberately frozen then and the button cannot act.
+
+   Its own function, called from setPlay() as well as buildMarks().
+   It used to live inside buildMarks alone, and pausing a replay that
+   left the snapshot still valid rebuilt nothing -- so the button
+   stayed greyed out until something unrelated redrew the marks.
+
+   Looked up rather than held in a const: buildMarks runs during
+   setup, before a const declared with the other controls exists. */
+function allBtnState() {
+  const ab = document.getElementById('allv');
+  if (ab) { ab.classList.toggle('dim', tlPlaying); }
+}
+
 function placeMarks(v) {
   marks.forEach(m => {
     const p = project(m.lat, m.lon, z);
@@ -8913,7 +9214,7 @@ function wantTrack(fit, force) {
     if (track) { track = null; trackLegend(); }
     return;
   }
-  if (!force && track && track.mmsi === vessel && track.hours === winH) {
+  if (!force && track && track.mmsi === vessel && track.key === winKey()) {
     return;
   }
   // The old track belongs to another vessel; drop it now rather than
@@ -8924,8 +9225,8 @@ function wantTrack(fit, force) {
     track = null; trackLegend(); render();
   }
   const seq = ++trackSeq;
-  const want = vessel, wantH = winH;
-  fetch('/api/track?mmsi=' + encodeURIComponent(vessel) + '&h=' + winH)
+  const want = vessel, wantKey = winKey();
+  fetch('/api/track?mmsi=' + encodeURIComponent(vessel) + '&h=' + trackHours())
     .then(r => r.json())
     .then(d => {
       // A slower answer for a vessel since deselected must not land.
@@ -8934,8 +9235,17 @@ function wantTrack(fit, force) {
       // the top is the only place that knows who a vessel reached by
       // link is, and without them it said "(unnamed)" beside a
       // dropdown that had her name in it.
-      track = (d && d.ok && d.pts && d.pts.length > 1)
-        ? {mmsi: want, hours: wantH, pts: d.pts, raw: d.raw,
+      // Clipped when the window is a custom one: the endpoint only
+      // understands "hours back from now", so its answer runs past
+      // the right-hand end of the range and the track would be drawn
+      // outside the span the timeline covers. raw follows the clip,
+      // because "50 of 2000 kept" would report the despike against a
+      // corpus most of which was never in the window.
+      const tp = (d && d.pts ? d.pts : []).filter(
+        p => !winCustom || (p[0] >= winCustom.lo && p[0] <= winCustom.hi));
+      track = (d && d.ok && tp.length > 1)
+        ? {mmsi: want, key: wantKey, hours: trackHours(), pts: tp,
+           raw: winCustom ? tp.length : d.raw,
            gap: d.gap, name: d.name, type: d.type}
         : null;
       if (d && d.ok && !track) { lastIdent = d; }
@@ -9177,8 +9487,8 @@ const tl = document.getElementById('tl');
 const tlab = document.getElementById('tlab');
 let scrubT = null;
 
-const tlLo = () => DATA.built - winH * 3600;
-const tlAt = frac => tlLo() + frac * (DATA.built - tlLo());
+const tlLo = () => winLo();
+const tlAt = frac => winLo() + frac * (winHi() - winLo());
 
 function clearScrub() {
   // Whoever drops the clock stops the film. Several paths reach here
@@ -9190,6 +9500,11 @@ function clearScrub() {
   clearTimeout(fleetTimer);
   fleetReq += 1;                 // abandon any answer still in flight
   fleetCount = null; fleetTrunc = false;
+  // The snapshot belongs to a moment. Back on live, DATA.now has
+  // every target already and the toggle filters it for free.
+  stillAt = null; stillMeta = null;
+  clearTimeout(stillTimer);
+  stillReq += 1;                 // abandon an answer still in flight
   if (fleetAt) { fleetAt = null; buildMarks(); render(); }
   while (scrubEl.firstChild) { scrubEl.removeChild(scrubEl.firstChild); }
   scrubLab.style.display = 'none';
@@ -9316,6 +9631,8 @@ tl.addEventListener('input', () => {
     // dozens of times a second and the answer is a database read.
     clearTimeout(fleetTimer);
     fleetTimer = setTimeout(() => loadFleetAt(scrubT), 120);
+    // The resting snapshot is tied to a moment as well as a view.
+    maybeStills();
   }
   if (!sel) { showTimeContext(false); }
   if (scrubPend) { return; }
@@ -9326,6 +9643,156 @@ tl.addEventListener('input', () => {
     scrubLog();
   });
 });
+
+/* ---- the timeline, driven from the log ------------------------------
+   scrubLog() makes the list follow the slider. This is the same link
+   the other way: pick a transmission and the clock moves to the moment
+   it was keyed, so the fleet redraws where it actually was while those
+   words were going out.
+
+   It exists because the slider cannot do this by hand. The handle has
+   a thousand steps across the whole window, which is 86 seconds per
+   step at 24 hours and twenty minutes per step at two weeks -- so the
+   moment a given message was sent is usually not reachable by dragging
+   at all. scrubT is set here from the message's own timestamp and is
+   exact; tl.value is only the handle catching up, and is rounded. */
+function scrubTo(ts) {
+  if (ts == null || !isFinite(ts)) { return false; }
+  // The side log is NOT filtered by the timeline window -- ctxAllRows()
+  // carries everything the recorder kept, up to two weeks, while the
+  // window defaults to 24 hours and goes as short as one. So a row can
+  // sit left of the slider's own left edge, and often does. Widen the
+  // window to reach it rather than clamping: clamping would put the
+  // clock on a different moment than the one asked for and say nothing
+  // about having done so, which is the one thing this page must not do.
+  if (ts < winLo() || ts > winHi()) {
+    if (winCustom) {
+      // A range set by hand: stretch whichever end does not reach,
+      // rather than discarding a choice the person made deliberately.
+      if (ts < winCustom.lo) { winCustom.lo = Math.max(ts, winFloor()); }
+      if (ts > winCustom.hi) { winCustom.hi = Math.min(ts, DATA.built); }
+      rangeOption();
+      fillVessels();
+      redraw(false);
+    } else if (ts < tlLo()) {
+      const need = (DATA.built - ts) / 3600;
+      const w = WINDOWS.find(h => h >= need);
+      if (!w) { return false; }       // older than the page holds
+      winH = w;
+      winSel.value = String(w);
+      fillVessels();
+      // Keeps the field of view, like every other control here. It
+      // also calls clearScrub(), so the clock must be set after it.
+      redraw(false);
+    }
+  }
+  if (ts > winHi()) { ts = winHi(); }
+  if (ts < winLo()) { ts = winLo(); }
+  scrubT = ts;
+  const span = winHi() - tlLo();
+  // Never park the handle on the live position while a clock is set:
+  // the slider's own handler reads max as "back to live", so the next
+  // nudge would drop the scrub instead of moving it.
+  tl.value = span > 0
+    ? Math.min(Math.round(((ts - tlLo()) / span) * +tl.max), +tl.max - 1)
+    : +tl.max - 1;
+  tlabSet();
+  // A button press is one deliberate jump, not a drag: ask for the
+  // fleet straight away rather than through the 120 ms rest the
+  // slider needs, and force the panel to re-anchor.
+  if (mode === 'vessels') { clearTimeout(fleetTimer); loadFleetAt(scrubT); }
+  if (!sel) { showTimeContext(true); }
+  drawScrub(viewport());
+  scrubLog();
+  return true;
+}
+
+/* One button rather than one on every row: the panel is narrow and a
+   mark on each line was clutter. That leaves the question of which
+   message it means, so the button answers it -- the timestamp in the
+   label is the one it will jump to, and it follows the list as you
+   scroll. The date is always printed: at a two-week window a bare
+   clock reading is ambiguous by up to thirteen days. */
+let syncTs = null;
+/* Matches the breakpoint in the stylesheet above, which hides the bar
+   on phones. Checked here as well so the scroll handler stops
+   measuring rows for a control nobody can see -- it runs on every
+   animation frame of a flick through the log. Live rather than read
+   once, so rotating a tablet is picked up without a reload. */
+const syncWanted = () => !window.matchMedia('(max-width:700px)').matches;
+
+/* Put the purple on the row the button is aimed at, and take it off
+   whatever had it. Compared first so a scroll that does not change the
+   target touches no classes at all -- this runs on every animation
+   frame of a flick through the log. */
+function markTarget(row) {
+  const was = document.querySelector('#logbody .e.tgt');
+  if (was === row) { return; }
+  if (was) { was.classList.remove('tgt'); }
+  if (row) { row.classList.add('tgt'); }
+}
+
+function syncBarSet() {
+  // Looked up per call rather than held in a const: this runs from
+  // render paths that fire during page setup, before a const at this
+  // point in the file would have been initialised.
+  const bar = document.getElementById('syncbar');
+  const btn = document.getElementById('synct');
+  if (!bar || !btn) { return; }
+  if (!syncWanted()) {
+    syncTs = null; bar.classList.remove('on'); markTarget(null); return;
+  }
+  const r = centredRow();
+  if (!r) {
+    syncTs = null; bar.classList.remove('on'); markTarget(null); return;
+  }
+  markTarget(r);
+  syncTs = +r.dataset.ts;
+  btn.innerHTML = 'Sync Time &rarr; ' + esc(stamp(syncTs));
+  btn.title = 'Move the timeline to ' + stamp(syncTs)
+    + ', when this transmission was keyed, and redraw the fleet there';
+  bar.classList.add('on');
+}
+
+/* The row nearest the middle of the visible list. Middle rather than
+   top because the top row is usually half under the subtitle, and the
+   line you are reading is the one in front of you. */
+function centredRow() {
+  const body = document.getElementById('logbody');
+  if (!body) { return null; }
+  const rows = body.querySelectorAll('.e[data-ts]');
+  if (!rows.length) { return null; }
+  const b = body.getBoundingClientRect();
+  const mid = b.top + b.height / 2;
+  let best = null, bestD = Infinity;
+  for (const r of rows) {
+    const q = r.getBoundingClientRect();
+    if (q.bottom < b.top || q.top > b.bottom) { continue; }   // scrolled off
+    const d = Math.abs((q.top + q.height / 2) - mid);
+    if (d < bestD) { bestD = d; best = r; }
+  }
+  return best || rows[0];
+}
+
+let syncPend = false;
+document.getElementById('logbody').addEventListener('scroll', () => {
+  if (syncPend) { return; }
+  syncPend = true;
+  requestAnimationFrame(() => { syncPend = false; syncBarSet(); });
+});
+document.getElementById('synct').addEventListener('click', () => {
+  scrubTo(syncTs);
+});
+/* The panel's contents are replaced from six different places, and a
+   seventh will be added one day. Rather than a call at each, watch the
+   element: any path that swaps the rows re-reads the label, and one
+   that empties the panel hides the bar instead of leaving it pointing
+   at a message that is no longer on screen. The two explicit calls
+   above stay, because they run after scrollIntoView and scrollTop have
+   moved the list and so see the row that actually ended up centred;
+   this fires on the mutation itself, before layout has settled. */
+new MutationObserver(() => syncBarSet()).observe(
+  document.getElementById('logbody'), {childList: true});
 /* ---- playback -------------------------------------------------------
    Sixty times real time: a second of watching is a minute of water.
 
@@ -9360,6 +9827,7 @@ function setPlay(on) {
   playBtn.classList.toggle('on', on);
   playBtn.innerHTML = on ? '&#10073;&#10073;' : '&#9654;';
   playBtn.title = on ? 'pause' : 'play the window at 60x';
+  allBtnState();          // dim or undim at once, not at the next redraw
   if (on) {
     // Starting from the live end would run off the right immediately,
     // so begin at the left of the window -- the whole point is to
@@ -9369,6 +9837,10 @@ function setPlay(on) {
     playStep(playGen);
   } else {
     clearTimeout(playTimer);
+    // Stopping parks the clock, and the view will have travelled
+    // while the film ran, so the resting vessels on screen are for
+    // somewhere else. Reload them for where we have ended up.
+    maybeStills();
   }
 }
 
@@ -9385,13 +9857,13 @@ function playStep(gen) {
   playLast = now;
   scrubT += dt * PLAY_RATE;
 
-  if (scrubT >= DATA.built) {
+  if (scrubT >= winHi()) {
     // Caught up with the present: stop there and hand back to live.
     setPlay(false);
     clearScrub();
     return;
   }
-  tl.value = Math.round(((scrubT - tlLo()) / (DATA.built - tlLo())) * +tl.max);
+  tl.value = Math.round(((scrubT - tlLo()) / (winHi() - tlLo())) * +tl.max);
   tlabSet();
   drawScrub(viewport());
   if (!sel) { showTimeContext(false); }
@@ -9414,6 +9886,17 @@ playBtn.addEventListener('click', () => setPlay(!tlPlaying));
 
 document.getElementById('tnow').addEventListener('click', () => {
   setPlay(false);
+  // From a custom range, "live" means leaving it. Its right-hand end
+  // is in the past, so dropping the scrub alone would still leave
+  // history on screen and the button would look broken.
+  if (winCustom) {
+    winCustom = null;
+    rangeOption();
+    winSel.value = String(winH);
+    fillVessels();
+    redraw(false);
+    return;
+  }
   clearScrub();
 });
 
@@ -9480,6 +9963,12 @@ function showVessel() {
 function render() {
   const v = viewport(); drawTiles(v); drawLines(v); placeMarks(v);
   drawScrub(v);
+  // Panning and zooming are what move the view out from under the
+  // resting snapshot, and they both land here. Cheap: maybeStills()
+  // returns at once unless the toggle is on, the clock is parked and
+  // the box has actually been left behind, and the request itself is
+  // debounced so a drag asks once at the end rather than per frame.
+  maybeStills();
   // The pin is a position, not a pixel, so panning and zooming move it
   // on screen. Redrawn from the same place the marks are, or the leg
   // detaches from the water the moment the map moves under it.
@@ -9513,7 +10002,14 @@ const ctxAllRows = () => {
     (DATA.hist[ch] || []).forEach(r => out.push({r: r, ch: ch}));
   });
   out.sort((x, y) => x.r.ts - y.r.ts);
-  return out;
+  // A relative window does not filter this list -- the panel is a
+  // reading view and scrolling back past the window has always been
+  // allowed. A custom range is different: it is a deliberate "show me
+  // this afternoon", and leaving the newest traffic in the panel put
+  // Sunday's messages beside Tuesday's map and labelled them live.
+  return winCustom
+    ? out.filter(e => e.r.ts >= winCustom.lo && e.r.ts <= winCustom.hi)
+    : out;
 };
 function ctxRows() {
   // null means nothing has been clicked, which the scrubber's
@@ -9716,6 +10212,7 @@ function renderCtx(rows, i, mixed, t, back) {
   }).join('');
   const h = document.getElementById('hit');
   if (h) h.scrollIntoView({block: 'center'});
+  syncBarSet();
 }
 
 /* ---- the log, anchored to the scrub point ---------------------------
@@ -9762,15 +10259,19 @@ function showTimeContext(force) {
    when it has not been asked for anything in particular. */
 function showLiveTail() {
   const rows = ctxRows();
-  if (!rows.length) { showEmptyCtx('live \u00b7 ' + ctxWhat()); return; }
+  if (!rows.length) {
+    showEmptyCtx((winCustom ? 'in range' : 'live') + ' \u00b7 ' + ctxWhat());
+    return;
+  }
   const i = rows.length - 1;
   const a = Math.max(0, i - (TAIL_N - 1));
   document.getElementById('logsub').innerHTML =
-    'live \u00b7 ' + esc(ctxWhat()) + ' &middot; newest '
-    + ((i - a) + 1) + ' of ' + rows.length;
+    (winCustom ? 'in range' : 'live') + ' \u00b7 ' + esc(ctxWhat())
+    + ' &middot; newest ' + ((i - a) + 1) + ' of ' + rows.length;
   renderCtx(rows, i, ctxMixed(), null, TAIL_N - 1);
   const body = document.getElementById('logbody');
   if (body) { body.scrollTop = body.scrollHeight; }
+  syncBarSet();
 }
 
 function clearTimeContext() {
@@ -9835,6 +10336,11 @@ WINDOWS.forEach(h => {
   o.value = h; o.textContent = winLabel(h);
   winSel.appendChild(o);
 });
+(() => {        // the foot of the list, after the fixed spans
+  const o = document.createElement('option');
+  o.value = 'custom'; o.textContent = 'Custom range\u2026';
+  winSel.appendChild(o);
+})();
 winSel.value = String(winH);
 
 const vesSel = document.getElementById('ves');
@@ -9955,7 +10461,101 @@ function redraw(doFit) {
    exception is arriving from elsewhere, where there is no view to keep:
    first paint, and a link from the log or the AIS page naming a vessel
    or a transmission, which fits onto what the link was about. */
-winSel.onchange = () => { winH = +winSel.value; fillVessels(); redraw(false); };
+winSel.onchange = () => {
+  if (winSel.value === 'custom') { openRange(); return; }
+  winCustom = null;
+  rangeOption();
+  winH = +winSel.value;
+  fillVessels(); redraw(false);
+};
+
+/* ---- the custom range ----------------------------------------------
+   Every other entry in this list is "the last N hours", anchored to
+   now. This one is two absolute moments, which is why winLo()/winHi()
+   exist further up: the timeline's right-hand end stops being "now"
+   and becomes something the person chose.
+
+   Bounded by what the page actually holds. The server cuts the
+   payload at maxHours, so a range older than that would draw nothing
+   at all, and a picker that accepted it would be lying about what is
+   available. */
+const rangeWrap = document.getElementById('rangewrap');
+const rFrom = document.getElementById('rfrom');
+const rTo = document.getElementById('rto');
+const rNote = document.getElementById('rangenote');
+
+/* An <input type=datetime-local> value is a local wall-clock string
+   with no zone on it, and Date.parse reads that form as local, which
+   is what is wanted here. Note this is the opposite of the bare UTC
+   stamps ais_ingest writes, the trap called out further up this file
+   -- same shape, different meaning, so it gets its own conversion
+   rather than sharing one. */
+const toLocal = ts => {
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+};
+const fromLocal = v => {
+  const t = Date.parse(v);
+  return isFinite(t) ? t / 1000 : null;
+};
+
+/* The option's own text becomes the chosen range, so the closed
+   dropdown still says what is on screen rather than "Custom range". */
+function rangeOption() {
+  const o = winSel.querySelector('option[value="custom"]');
+  if (!o) { return; }
+  o.textContent = winCustom ? winTextShort() : 'Custom range\u2026';
+  if (winCustom) { winSel.value = 'custom'; }
+}
+
+function openRange() {
+  const lo = winCustom ? winCustom.lo : winLo();
+  const hi = winCustom ? winCustom.hi : winHi();
+  rFrom.min = rTo.min = toLocal(winFloor());
+  rFrom.max = rTo.max = toLocal(DATA.built);
+  rFrom.value = toLocal(Math.max(lo, winFloor()));
+  rTo.value = toLocal(Math.min(hi, DATA.built));
+  rNote.className = '';
+  rNote.textContent = 'Anywhere back to ' + stamp(winFloor()) + '.';
+  rangeWrap.hidden = false;
+  rFrom.focus();
+}
+
+function closeRange(apply) {
+  if (!apply) {
+    rangeWrap.hidden = true;
+    // Put the dropdown back, or it sits on "Custom range" having
+    // changed nothing at all.
+    winSel.value = winCustom ? 'custom' : String(winH);
+    return;
+  }
+  const lo = fromLocal(rFrom.value), hi = fromLocal(rTo.value);
+  const bad = m => { rNote.className = 'bad'; rNote.textContent = m; };
+  if (lo == null || hi == null) { return bad('Both a start and an end are needed.'); }
+  if (hi <= lo) { return bad('The end has to come after the start.'); }
+  if (hi - lo < 60) { return bad('Pick at least a minute.'); }
+  if (lo < winFloor() - 1) {
+    return bad('Nothing is held before ' + stamp(winFloor()) + '.');
+  }
+  if (hi > DATA.built + 1) {
+    return bad('Nothing is recorded after ' + stamp(DATA.built) + '.');
+  }
+  winCustom = {lo: Math.max(lo, winFloor()), hi: Math.min(hi, DATA.built)};
+  rangeWrap.hidden = true;
+  rangeOption();
+  fillVessels();
+  redraw(false);             // keeps the view, like every control here
+}
+document.getElementById('rok').addEventListener('click', () => closeRange(true));
+document.getElementById('rcancel').addEventListener('click', () => closeRange(false));
+rangeWrap.addEventListener('click',
+  e => { if (e.target === rangeWrap) { closeRange(false); } });
+document.addEventListener('keydown', e => {
+  if (rangeWrap.hidden) { return; }
+  if (e.key === 'Escape') { closeRange(false); }
+  else if (e.key === 'Enter') { closeRange(true); }
+});
 vesSel.onchange = () => {
   vessel = vesSel.value || null;
   if (scrubT != null) {
@@ -9985,6 +10585,36 @@ mMsg.onclick = () => { mode = 'messages'; mMsg.classList.add('on');
   mVes.classList.remove('on'); redraw(false); };
 mVes.onclick = () => { mode = 'vessels'; mVes.classList.add('on');
   mMsg.classList.remove('on'); redraw(false); };
+
+/* ---- every target, or only those under way --------------------------
+   buildMarks() and currentShown() do the work; this is the switch.
+   Nothing here moves the map: like every other control on this page
+   it says what to show, not where to look. */
+const allBtn = document.getElementById('allv');
+function setAllVessels(on, quiet) {
+  showAll = !!on;
+  if (allBtn) {
+    allBtn.classList.toggle('on', showAll);
+    allBtn.setAttribute('aria-pressed', showAll ? 'true' : 'false');
+  }
+  if (quiet) { return; }        // setup: the first render has not run yet
+  // Deliberately NOT fillVessels(): the dropdown is built from tagged
+  // traffic, not from DATA.now, so this toggle cannot change it -- and
+  // fillVessels() drops the chosen vessel when she has nothing in the
+  // window, which would make a display switch quietly change the
+  // subject.
+  buildMarks();
+  render();
+  barSummary();
+  // Mid-scrub the stopped vessels are not in DATA.now at all -- they
+  // come from their own snapshot, fetched for this view and moment.
+  // Turning the toggle off drops it; turning it on asks for one.
+  if (!showAll) { stillAt = null; stillMeta = null; buildMarks(); render(); }
+  maybeStills();
+}
+if (allBtn) {
+  allBtn.addEventListener('click', () => setAllVessels(!showAll));
+}
 // Switching modes changes what a mark means, so the hover text and the
 // click behaviour are rebuilt with them -- redraw() already does that.
 
@@ -10437,7 +11067,9 @@ function preselect() {
     if (mine.length) {
       const newest = mine[mine.length - 1];
       const span = (DATA.built - newest.ts) / 3600;
+      winCustom = null;      // a link asks for a span back from now
       winH = WINDOWS.find(h => h >= span) || WINDOWS[WINDOWS.length - 1];
+      rangeOption();
       winSel.value = String(winH);
       fillVessels();
       vessel = p.mmsi;
@@ -10466,7 +11098,9 @@ function preselect() {
     return;
   }
   const need = (DATA.built - t.ts) / 3600;
+  winCustom = null;          // likewise: a link is relative to now
   winH = WINDOWS.find(h => h >= need) || WINDOWS[WINDOWS.length - 1];
+  rangeOption();
   winSel.value = String(winH);
   fillVessels();
   vessel = t.mmsi;
@@ -10502,7 +11136,7 @@ function barSummary() {
   const who = vessel === null ? 'all vessels'
     : ((o && o.textContent) || vessel).replace(/\s*\(\d+\)\s*$/, '');
   barSum.textContent = (mode === 'vessels' ? 'Vessels' : 'Messages')
-    + ' \u00b7 ' + winH + 'h \u00b7 ' + who;
+    + ' \u00b7 ' + winTextShort() + ' \u00b7 ' + who;
 }
 
 function setBar(shut) {
@@ -10518,6 +11152,7 @@ barX.onclick = () => setBar(!barEl.classList.contains('shut'));
 // Starts folded: the summary says what the controls would have said,
 // and the map is what the page is for.
 setBar(prefs.bar !== 0);
+
 
 
 /* ---- keeping the map live -------------------------------------------
@@ -10546,7 +11181,10 @@ const TARGET_DROP_S = 2 * 3600;
 // Not while the clock is parked in the past, nor mid-gesture: a
 // redraw under a dragging hand or a running replay is a bug, not a
 // refresh.
-const liveNow = () => scrubT === null && !tlPlaying && !drag && !pinch
+// A custom range is a look at the past, so new traffic must not
+// repaint it or scroll its log out from under the reader.
+const liveNow = () => !winCustom
+  && scrubT === null && !tlPlaying && !drag && !pinch
   && !document.hidden;
 
 function mergeDelta(d) {
@@ -11005,6 +11643,13 @@ def track_payload(mmsi, hours, db_path=None):
 FLEET_HALF_S = 900       # look this far either side for a fix
 FLEET_MIN_SOG = 5        # tenths of a knot: matches the map's UNDER_WAY_KT
 FLEET_MAX = 400          # hard cap on vessels returned
+# The cap when the map asks for every target rather than only those
+# making way. Higher because that is the whole point of the request:
+# around twelve hundred targets sit alongside, on moorings or at
+# anchor against forty under way, and a 400 cap would silently drop
+# two thirds of an anchorage. Still a cap, because an unbounded answer
+# on a Pi is how a page stops responding.
+FLEET_MAX_ALL = 2000
 
 
 def _fleet_names(db_path, mmsis):
@@ -11036,8 +11681,58 @@ def _fleet_names(db_path, mmsis):
     return out
 
 
-def fleet_at(when, db_path, half=FLEET_HALF_S):
-    """Every vessel under way at `when`, interpolated to that instant.
+def _fleet_want(q):
+    """Which half of the water the caller is asking about.
+
+    Anything unrecognised falls back to the default rather than
+    erroring: an old page talking to a new server asks for nothing at
+    all and should keep getting the movers it has always got.
+    """
+    w = (q.get("want") or [""])[0].strip().lower()
+    return w if w in ("moving", "rest", "all") else "moving"
+
+
+def _fleet_bbox(q):
+    """The viewport, as integer micro-degrees to match the stored fixes.
+
+    Returned ordered, so a box given corner-first either way works. A
+    malformed box is dropped rather than refused: the honest failure
+    is a wider answer, not no answer.
+    """
+    raw = (q.get("bbox") or [""])[0]
+    if not raw:
+        return None
+    try:
+        a, b, c, d = [float(x) for x in raw.split(",")]
+    except ValueError:
+        return None
+    if not all(-90 <= v <= 90 for v in (a, c)):
+        return None
+    if not all(-180 <= v <= 180 for v in (b, d)):
+        return None
+    return (int(min(a, c) * 1e6), int(min(b, d) * 1e6),
+            int(max(a, c) * 1e6), int(max(b, d) * 1e6))
+
+
+def fleet_at(when, db_path, half=FLEET_HALF_S, want="moving", bbox=None):
+    """Where the fleet was at `when`, interpolated to that instant.
+
+    `want` picks which half of the water is answered for:
+
+      moving  vessels making way -- the default, and what playback
+              asks for every frame. A few KB whatever the window.
+      rest    the complement: alongside, moored, anchored, drifting.
+              Asked for once, on demand, because none of them are
+              going anywhere and a replay need not re-fetch them.
+      all     both, for a caller that wants one round trip.
+
+    `bbox` is (lat0, lon0, lat1, lon1) in degrees and clips the answer
+    to what is on screen. It matters most for `rest`: the whole water
+    is around twelve hundred targets and 130 KB, while a harbour at
+    working zoom is a small fraction of that. Applied AFTER
+    interpolation, not in the SQL, so a vessel whose two fixes
+    straddle the edge of the box is still placed from both of them
+    rather than snapping to the one inside it.
 
     A vessel reports every few minutes, so placing her at her last fix
     before the scrub point would have the fleet jumping in steps. Where
@@ -11094,20 +11789,30 @@ def fleet_at(when, db_path, half=FLEET_HALF_S):
             r = a or b
             lat, lon, sog, cog = r[1], r[2], r[3], r[4]
             age = abs(when - r[0])
-        if sog is None or sog <= FLEET_MIN_SOG:
+        moving = sog is not None and sog > FLEET_MIN_SOG
+        if (want == "moving" and not moving) or (want == "rest" and moving):
+            continue
+        if bbox is not None and not (bbox[0] <= lat <= bbox[2]
+                                     and bbox[1] <= lon <= bbox[3]):
             continue
         out.append({"mmsi": str(m),
                     "lat": round(lat / 1e6, 6), "lon": round(lon / 1e6, 6),
-                    "sog": round(sog / 10.0, 1),
+                    # None survives only on the `every` path, where a
+                    # vessel with no speed reported is still a target
+                    # worth drawing. The map reads a missing sog as
+                    # stopped and says "speed not reported" rather
+                    # than inventing a zero.
+                    "sog": None if sog is None else round(sog / 10.0, 1),
                     "cog": None if cog is None else round(cog / 10.0, 1),
                     "age": int(age)})
     out.sort(key=lambda v: v["mmsi"])
-    truncated = len(out) > FLEET_MAX
-    out = out[:FLEET_MAX]
+    cap = FLEET_MAX if want == "moving" else FLEET_MAX_ALL
+    truncated = len(out) > cap
+    out = out[:cap]
     names = _fleet_names(db_path, [int(v["mmsi"]) for v in out])
     for v in out:
         v["name"] = names.get(int(v["mmsi"])) or v["mmsi"]
-    return {"ok": True, "t": when, "half": half,
+    return {"ok": True, "t": when, "half": half, "want": want,
             "truncated": truncated, "vessels": out}
 
 
@@ -12532,7 +13237,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200,
                        json.dumps(fleet_at(
                            (q.get("t") or [""])[0].strip(),
-                           self.data.db_path)).encode(),
+                           self.data.db_path,
+                           want=_fleet_want(q),
+                           bbox=_fleet_bbox(q))).encode(),
                        "application/json")
             return
 
