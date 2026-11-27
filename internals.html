@@ -3247,8 +3247,22 @@ message's channel, but visibly, in the dropdown, so it can be moved back.</p>
 <p>Every empty state names the choice that produced it. A blank panel reads as
 a fault.</p>
 
-<p>While a recording is playing the panel is not rebuilt, because rebuilding
-it stops the audio. New lines are still merged; they appear a tick later.</p>
+<p>A recording plays through a rebuild. What is playing is held as a message
+id, not as the row element that happened to be on screen when it started, so
+<code>markPlay()</code> simply finds whichever row now carries that id and
+marks it again.</p>
+
+<p>It was the other way round until 2026-11-27, and the reason is worth
+keeping. Holding the row tied the audio to the DOM: rebuilding the panel
+discarded it, so the rebuild had to stop the recording rather than leave one
+running with nothing marked and no way to halt it. The live refresh therefore
+skipped the rebuild whenever anything was playing, and new traffic arrived in
+a batch when the clip finished &mdash; visible on a desktop as lines queueing
+up, and on a phone as the playback being cut off outright. An id survives any
+number of rebuilds, so both halves now hold: the lines appear as they land and
+the recording is untouched. Nothing stops it but the person who started it;
+there is no longer any code path that can. The main log page had always worked
+this way, and the map&rsquo;s side panel was the odd one out.</p>
 
 <h4>Staying current</h4>
 

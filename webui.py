@@ -10176,7 +10176,6 @@ function renderCtx(rows, i, mixed, t, back) {
   // changes.
   const day = ts => new Date(ts * 1000).toLocaleDateString([],
     {weekday: 'short', month: 'short', day: 'numeric'});
-  stopAudio();
   const body = document.getElementById('logbody');
   let lastDay = null;
   body.innerHTML = rows.slice(a, b).map((e, k) => {
@@ -10213,6 +10212,9 @@ function renderCtx(rows, i, mixed, t, back) {
   const h = document.getElementById('hit');
   if (h) h.scrollIntoView({block: 'center'});
   syncBarSet();
+  // The rows are new objects; put the playing mark back on whichever
+  // one now carries the id. Nothing here touches the audio itself.
+  markPlay();
 }
 
 /* ---- the log, anchored to the scrub point ---------------------------
@@ -10294,38 +10296,59 @@ function clearTimeContext() {
    id, so a click on anything older does nothing at all. */
 const AUDIO = /^https?:$/.test(location.protocol) ? '' : DATA.audioBase;
 const player = new Audio();
-let playing = null;
+
+/* What is playing is a message id, not the row element that happened
+   to be on screen when it started.
+
+   It used to hold the row, which tied the audio to the DOM: rebuilding
+   the panel threw that row away, so the rebuild had to stop the audio
+   to avoid leaving a recording running with nothing marked and no way
+   to stop it. That in turn meant the live refresh had to hold new
+   messages back while anything was playing -- they arrived in a batch
+   when the recording finished. On a phone it was worse than that and
+   the playback was cut off outright.
+
+   An id survives any number of rebuilds. markPlay() finds whichever
+   row now carries it, so the panel can repaint as often as it likes
+   underneath a recording that keeps playing. Nothing stops the audio
+   except the person who started it. The main log page has always
+   worked this way. */
+let playing = null;          // the message id, or null
+
+function rowFor(mid) {
+  return mid == null ? null : document.querySelector(
+    '#logbody .e[data-mid="' + String(mid).replace(/["\\]/g, '\\$&') + '"]');
+}
 function markPlay() {
   const was = document.querySelector('#logbody .e.play');
-  if (was) was.classList.remove('play');
-  if (playing) playing.classList.add('play');
+  if (was) { was.classList.remove('play'); }
+  const now = rowFor(playing);
+  if (now) { now.classList.add('play'); }
 }
 player.onended = () => { playing = null; markPlay(); };
-/* Rebuilding the log throws away the row that is playing. Without this
-   the audio carries on with nothing on screen marked and no way to
-   stop it. */
-function stopAudio() {
-  if (!playing) { return; }
-  player.pause(); player.currentTime = 0;
-  playing = null; markPlay();
-}
 player.onerror = () => {
-  if (playing) { playing.classList.add('dead'); }
+  const row = rowFor(playing);
+  if (row) { row.classList.add('dead'); }
   playing = null; markPlay();
 };
 document.getElementById('logbody').addEventListener('click', e => {
+  const sy = e.target.closest && e.target.closest('#synct');
+  if (sy) { return; }                 // the sync bar is not a log row
   const row = e.target.closest && e.target.closest('.e[data-mid]');
   if (!row) { return; }
-  if (playing === row) {              // click the playing row to stop
+  const mid = row.dataset.mid;
+  if (playing === mid) {              // tap the playing row to stop
     player.pause(); player.currentTime = 0;
     playing = null; markPlay(); return;
   }
   row.classList.remove('dead');
   player.pause();
-  player.src = AUDIO + '/audio/' + row.dataset.mid;
-  playing = row; markPlay();
+  player.src = AUDIO + '/audio/' + mid;
+  playing = mid; markPlay();
   player.play().catch(() => {
-    row.classList.add('dead'); playing = null; markPlay();
+    const r = rowFor(mid);
+    if (r) { r.classList.add('dead'); }
+    playing = null; markPlay();
   });
 });
 
@@ -10433,7 +10456,6 @@ function redraw(doFit) {
     // and hiding the control that governs the panel left no way back to
     // the live log short of reloading the page.
     sel = null;
-    stopAudio();
     refreshCtx();
   }
   buildMarks();
@@ -11250,14 +11272,15 @@ function repaintLive() {
   render();
   barSummary();
   showVessel();
-  // Rebuilding the panel stops whatever is playing, so a recording
-  // being listened to is left alone and the new lines wait for the
-  // next tick. Ten seconds of staleness beats the audio cutting out.
-  if (playing === null) {
-    refreshCtx();
-    if (body) {
-      body.scrollTop = atEnd ? body.scrollHeight : top;
-    }
+  // The panel repaints freely now. It used to be held back while
+  // anything was playing, because rebuilding it killed the audio --
+  // which meant new traffic arrived in a batch when the recording
+  // finished, and on a phone the recording was cut off anyway. With
+  // playback keyed by message id the rebuild is harmless, so the lines
+  // appear as they land and the recording carries on under them.
+  refreshCtx();
+  if (body) {
+    body.scrollTop = atEnd ? body.scrollHeight : top;
   }
 }
 
